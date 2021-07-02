@@ -2843,20 +2843,64 @@ def get_segments(angles_on_map):
         # if not, this means there is one more segment.
         if len(current_seg) < L: 
             segments_list.append(np.array(angles_on_map[indF_1+1:indF_2]))
-            # Now, I will do something artificial, just for better illustrations.
-            # first segment
-            seg1 = segments_list[0]
+            
+    return segments_list
+
+
+def get_segments_ball(segments_list):
+    """
+    Get the discontinued segments of the projected lines,
+    due to the cut of the sphere. For the ball.
+    """
+    
+    # I will do something artificial, just for better illustrations.
+    # first segment
+    if len(segments_list) > 1:
+        seg1 = segments_list[0]
+        if np.abs(seg1[0][0] - seg1[-1][0]) <= 2 * np.pi / 20:
             x1_mean = (seg1[0][0] + seg1[-1][0]) / 2.
             seg1[0][0] = x1_mean
             seg1[-1][0] = x1_mean
-            # second segment
-            seg2 = segments_list[1]
+        else:
+            x1 = seg1[0][0]
+            y1 = seg1[0][1]
+            x2 = seg1[-1][0]
+            y2 = seg1[-1][1]
+            if np.abs(x1) > np.abs(x2):
+                x_new = np.pi * np.sign(x1)
+            else:
+                x_new = np.pi * np.sign(x2)
+            if np.abs(y1) > np.abs(y2):
+                y_new = np.pi / 2 * np.sign(y1)
+            else:
+                y_new = np.pi / 2 * np.sign(y2)
+            seg1 = np.concatenate((np.array([[x_new, y_new]]), seg1, np.array([[x_new, y_new]])))
+
+        # second segment
+        seg2 = segments_list[1]
+        if np.abs(seg2[0][0] - seg2[-1][0]) <= 2 * np.pi / 20:
             x2_mean = (seg2[0][0] + seg2[-1][0]) / 2.
             seg2[0][0] = x2_mean
             seg2[-1][0] = x2_mean
-            segments_list = [seg1, seg2]
+        else:
+            x1 = seg2[0][0]
+            y1 = seg2[0][1]
+            x2 = seg2[-1][0]
+            y2 = seg2[-1][1]
+            if np.abs(x1) > np.abs(x2):
+                x_new = np.pi * np.sign(x1)
+            else:
+                x_new = np.pi * np.sign(x2)
+            if np.abs(y1) > np.abs(y2):
+                y_new = np.pi / 2 * np.sign(y1)
+            else:
+                y_new = np.pi / 2 * np.sign(y2)
+            seg2 = np.concatenate((np.array([[x_new, y_new]]), seg2, np.array([[x_new, y_new]])))
+        seg_list = [seg1, seg2]
+    else:
+        seg_list = segments_list
             
-    return segments_list
+    return seg_list
 
 
 # def get_segments(angles_on_map):
