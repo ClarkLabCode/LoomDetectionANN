@@ -1,4 +1,4 @@
-This repository is associated with the paper: *Shallow neural networks trained to detect collisions recover features of visual loom-selective neurons*, where we built neural network models to solve an inference problem: whether or not the incoming visual signals indicate an object on a collision course. The models trained from this inference problem exhibit a large range of properties, including structures, response curves and tunings, that resemble the loom-sensitive LPLC2 neurons in the fly brain. 
+This repository is associated with the paper: *Shallow neural networks trained to detect collisions recover features of visual loom-selective neurons* ([Link](https://www.biorxiv.org/content/10.1101/2021.07.07.451307v1)), where we built neural network models to solve an inference problem: whether or not the incoming visual signals indicate an object on a collision course. The models trained from this inference problem exhibit a large range of properties, including structures, response curves and tunings, that resemble the loom-sensitive LPLC2 neurons in the fly brain. 
 
 ## The folders are organized as follows:
 
