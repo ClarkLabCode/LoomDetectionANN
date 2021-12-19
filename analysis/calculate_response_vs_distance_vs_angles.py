@@ -17,14 +17,14 @@ import numpy as np
 import helper_functions as hpfn
 
 
-figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/'
+figure_path = '/Volumes/Baohua/research/loom_detection/results/revision/'
 if not os.path.exists(figure_path):
     os.makedirs(figure_path)
 if not os.path.exists(figure_path+'response_vs_distance/'):
     os.makedirs(figure_path+'response_vs_distance/')
 
 for M in [32, 256]:
-    data_path = figure_path+'model_clustering/clusterings/'
+    data_path = figure_path+'model_clustering_ln/clusterings/'
     model_folders = np.load(data_path+'model_folders_M{}.npy'.format(M), allow_pickle=True)
 
     # model
@@ -43,9 +43,9 @@ for M in [32, 256]:
     data_path = '/Volumes/Baohua/data_on_hd/loom/multi_lplc2_D5_L4_exp/set_{}/'.format(set_number)
     data_types = ['hit', 'miss', 'retreat', 'rotation']
 
-    model_types = ['excitatory', 'excitatory_WNR', 'inhibitory1', 'inhibitory2']
+    model_types = ['linear', 'rectified inhibition']
     filter_types = ['outward', 'inward']
-    model_type = model_types[3]
+    model_type = model_types[0]
 
     dt = 0.01
     sample_dt = 0.03
@@ -56,7 +56,7 @@ for M in [32, 256]:
 
     # outward
     filter_type = filter_types[0]
-    model_path = model_folders[0][2]+'/'
+    model_path = model_folders[0][0]+'/'
     data_type = data_types[0]
     res_max_all_hit_n, res_T_all_hit_n, angles_all_hit_n, steps_hit_n, distances_all_hit_n = hpfn.generate_response_multiunit(args, model_path, model_type, data_path, data_type, type_dict)
     save_file = figure_path+'response_vs_distance/'+'results'+'_'+filter_type+'_'+data_type+'_M{}'.format(M)
@@ -78,7 +78,7 @@ for M in [32, 256]:
 
     # inward
     filter_type = filter_types[1]
-    model_path = model_folders[1][2]+'/'
+    model_path = model_folders[1][0]+'/'
     data_type = data_types[0]
     res_max_all_hit_r, res_T_all_hit_r, angles_all_hit_r, steps_hit_r, distances_all_hit_r = hpfn.generate_response_multiunit(args, model_path, model_type, data_path, data_type, type_dict)
     save_file = figure_path+'response_vs_distance/'+'results'+'_'+filter_type+'_'+data_type+'_M{}'.format(M)

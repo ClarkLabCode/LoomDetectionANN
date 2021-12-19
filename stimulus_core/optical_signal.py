@@ -13,7 +13,7 @@ import dynamics_3d as dn3d
 
 
 # Produce one of the intensity frames in the video
-def get_one_intensity(M, pos, Rs, theta_r, theta_matrix, coord_matrix, K, L, pad, sigma=0.0):
+def get_one_intensity(M, pos, Rs, theta_r, theta_matrix, coord_matrix, K, L, pad, around_z_angles, sigma=0.0):
     """
     Args:
     M: # of lplc2 units
@@ -51,7 +51,8 @@ def get_one_intensity(M, pos, Rs, theta_r, theta_matrix, coord_matrix, K, L, pad
     for m in range(M):
         mask_1_T = np.zeros((N, N))
         angle = -lplc2_units[m]
-        pos_rot = get_rotated_coordinates(angle, pos)
+        around_z = around_z_angles[m]
+        pos_rot = get_rotated_coordinates(angle, pos, around_z)
         for p in range(P):
             x, y, z = pos_rot[p]
             R = Rs[p]
@@ -300,7 +301,7 @@ def get_xy_angles(x, y, z):
 
 
 # Rotate intrinsically around x and y according to an angle
-def get_rotated_coordinates(angle, pos):
+def get_rotated_coordinates(angle, pos, around_z=0):
     """
     Args:
     angle: [around_x, around_y] (rad).
@@ -310,7 +311,8 @@ def get_rotated_coordinates(angle, pos):
     pos: the rotated positions of the centers of the balls.
     """
     around_x, around_y = angle
-    r = R3d.from_euler('YXZ', [around_y, around_x, 0], degrees=False)
+    r = R3d.from_euler('YXZ', [around_y, around_x, around_z], degrees=False)
+
     pos = r.apply(pos)
 #     if around_x >= np.pi:
 #         pos[:, 1] = -pos[:, 1]
@@ -319,7 +321,7 @@ def get_rotated_coordinates(angle, pos):
 
 
 # Rotate intrinsically around x and y according to an angle reversed
-def get_rotated_coordinates_rev(angle, pos):
+def get_rotated_coordinates_rev(angle, pos, around_z=0):
     """
     Args:
     angle: [around_x, around_y] (rad).
@@ -329,7 +331,7 @@ def get_rotated_coordinates_rev(angle, pos):
     pos: the rotated positions of the centers of the balls.
     """
     around_x, around_y = angle
-    r = R3d.from_euler('ZXY', [0, around_x, around_y], degrees=False)
+    r = R3d.from_euler('ZXY', [around_z, around_x, around_y], degrees=False)
     pos = r.apply(pos)
 #     if around_x >= np.pi:
 #         pos[:, 1] = -pos[:, 1]
@@ -337,8 +339,8 @@ def get_rotated_coordinates_rev(angle, pos):
     return pos
 
 
-# Rotate the axis extrinsically according to an angle
-def get_rotated_axes(angle, pos, rev=False):
+# Rotate the axis intrinsically according to an angle
+def get_rotated_axes(angle, pos, rev=False, around_z=0):
     """
     Args:
     angle: (around_x, around_y) (rad).
@@ -349,7 +351,7 @@ def get_rotated_axes(angle, pos, rev=False):
     pos: the rotated positions of the centers of the balls.
     """
     around_x, around_y = angle
-    r = R3d.from_euler('XYZ', [around_x, around_y, 0], degrees=False)
+    r = R3d.from_euler('XYZ', [around_x, around_y, around_z], degrees=False)
     pos = r.apply(pos)
     if rev and around_x >= np.pi:
         pos[:, :] = -pos[:, :]

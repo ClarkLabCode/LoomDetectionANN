@@ -36,6 +36,345 @@ import lplc2_models as lplc2
 
 tf.compat.v1.disable_eager_execution()
 
+
+################################################
+####### Calculate and plot the responses #######
+################################################
+
+# get the filtered responses on given trajectory
+def get_response_over_time(args, model_path, model_type, UV_flow, intensity=0):
+    '''
+    Args:
+    args: a dictionary that contains problem parameters
+    model_path: a directory that contains pre-trained model parameters
+    model_type: model type
+    UV_flow: UV flow
+    intensity: frame intensity
+    
+    Returns:
+    res_T: response
+    '''
+    K = args['K']
+    alpha_leak = args['alpha_leak']
+    intensity = None
+    if args['use_intensity']:
+        intensity = intensity
+        assert(len(intensity) == len(UV_flow_))
+    
+    a = np.load(model_path + "trained_a.npy")
+    b = np.load(model_path + "trained_b.npy")
+    
+    intercept_e = np.load(model_path + "trained_intercept_e.npy")
+    tau_1 = np.load(model_path + "trained_tau_1.npy")
+    weights_e = np.load(model_path + "trained_weights_e.npy")
+    if model_type == 'rectified inhibition':
+        weights_i = np.load(model_path + "trained_weights_i.npy")
+        intercept_i = np.load(model_path + "trained_intercept_i.npy")
+        
+    
+    weights_intensity = None
+    if args["use_intensity"]:
+        weights_intensity = np.load(model_path + "trained_weights_intensity.npy")
+    if args['temporal_filter']:
+        args['n'] = 1
+    if model_type == 'linear':
+        res_rest, res_T = get_response_linear(\
+            args, weights_e, intercept_e, UV_flow, weights_intensity, intensity)
+    elif model_type == 'rectified inhibition':
+        res_rest, res_T, _, _, _ = get_response_with_rectified_inhibition(\
+            args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity)
+    
+    res_TM = res_T.sum(axis=1)
+    res_rest_M = res_rest.sum()
+    prob = sigmoid_array(np.abs(a)*res_TM+b)
+    prob_rest = sigmoid_array(np.abs(a)*res_rest_M+b)
+    
+    return res_rest, res_T, prob, prob_rest
+
+
+# output to a LPLC2 neuron at a specific time point with one type of weights (excitatory or excitatory + inhibitory), linear model
+def get_output_linear(weights_e, intercept_e, UV_flow_t, alpha_leak, weights_intensity=0, intensity_t=0):
+    '''
+    Args:
+    weights_e: weights for excitatory (or excitatory + inhibitory) neurons, K*K by 4, 
+               for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
+    intercept_e: intercept in the activation function
+    UV_flow_t: flow field at time point t
+    alpha_leak: slope for leaky relu
+    
+    Returns:
+    output_t: output to a LPLC2 neuron at a specific time point t
+    '''
+    M = len(UV_flow_t)
+    output_t = intercept_e*np.ones(M)
+    for m in range(M):
+        if weights_intensity:
+            if intensity_t[m].shape[0] > 1:
+                output_t[m] = output_t[m] + np.dot(intensity_t[m][:], weights_intensity[:])
+            else:
+                output_t[m] = output_t[m] + 0
+        # input
+        for i in range(4):
+            if UV_flow_t[m].shape[0] > 1:
+                output_t[m] = output_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
+            else:
+                output_t[m] = output_t[m] + 0
+        # relu
+        output_t[m] = get_leaky_relu(alpha_leak, output_t[m])
+    
+    return output_t
+
+
+# response of a LPLC2 neuron
+def get_response_linear(args, weights_e, intercept_e, UV_flow, weights_intensity=0, intensity=0):
+    '''
+    Args:
+    args: other arguments
+    weights_e: weights for excitatory (or excitatory + inhibitory) neurons, K*K by 4, 
+               for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
+    intercept_e: intercept in the activation function
+    a: coefficient
+    b: intercept
+    UV_flow: flow field
+    alpha_leak: slope for leaky relu
+    
+    Returns:
+    res_T: response of a LPLC2 neuron
+    '''
+    n = args['n']
+    tau_1 = args['tau_1']
+    dt = args['dt']
+    alpha_leak = args['alpha_leak']
+    T = len(UV_flow)
+    M = len(UV_flow[0])
+    res_T = np.zeros((T, M))
+    UV_flow_0 = np.zeros((M, 1))
+    if weights_intensity:
+        res_rest = get_output_linear(\
+            weights_e, intercept_e, UV_flow_0, alpha_leak, weights_intensity, intensity[t])
+        for t in range(T):
+            output_t = get_output_linear(\
+                weights_e, intercept_e, UV_flow[t], alpha_leak, weights_intensity, intensity[t])
+            res_T[t, :] = output_t[:]
+    else:
+        res_rest = get_output_linear(\
+            weights_e, intercept_e, UV_flow_0, alpha_leak)
+        for t in range(T):
+            output_t = get_output_linear(\
+                weights_e, intercept_e, UV_flow[t], alpha_leak)
+            res_T[t, :] = output_t[:]
+    
+    return res_rest, res_T
+
+
+# output to a LPLC2 neuron at a specific time point with both excitatory and rectified inhibitory neurons 
+def get_output_with_rectified_inhibition(weights_e, weights_i, intercept_e, intercept_i, UV_flow_t, alpha_leak, \
+                               weights_intensity=0, intensity_t=0):
+    '''
+    Args:
+    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
+    weights_i: weights for inhibitory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
+    intercept_e: intercept in the activation function for the LPLC2 neuron
+    intercept_i: intercept in the activation function for inhibitory neurons
+    UV_flow_t: flow field at time point t
+    alpha_leak: slope for leaky relu
+    
+    Returns:
+    output_t: output of a LPLC2 neuron at a specific time point t
+    Ie_t: excitatory component without thresholding
+    Ii_t: inhibitory component with thresholding
+    Ii_t2: inhibitory component without thresholding
+    '''
+    M = len(UV_flow_t)
+    output_t = intercept_e*np.ones(M)
+    Ie_t = np.zeros(M)
+    Ii_t = np.zeros(M)
+    Ii_t2 = np.zeros(M)
+    for m in range(M):
+        if weights_intensity:
+            if intensity_t[m].shape[0] > 1:
+                output_t[m] = output_t[m] + np.dot(intensity_t[m][:], weights_intensity[:])
+            else:
+                output_t[m] = output_t[m] + 0
+        # excitory input
+        for i in range(4):
+            if UV_flow_t[m].shape[0] > 1:
+                output_t[m] = output_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
+                Ie_t[m] = Ie_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
+            else:
+                output_t[m] = output_t[m] + 0
+                Ie_t[m] = Ie_t[m] + 0
+        # inhibitory input
+        if UV_flow_t[m].shape[0] > 1:
+            h1 = intercept_i + np.dot(UV_flow_t[m][:, 0], weights_i[:, 0])
+            h2 = intercept_i + np.dot(UV_flow_t[m][:, 1], weights_i[:, 1])
+            h3 = intercept_i + np.dot(UV_flow_t[m][:, 2], weights_i[:, 2])
+            h4 = intercept_i + np.dot(UV_flow_t[m][:, 3], weights_i[:, 3]) 
+        else:
+            h1 = intercept_i + 0
+            h2 = intercept_i + 0
+            h3 = intercept_i + 0
+            h4 = intercept_i + 0
+        # relu
+        h12 = get_leaky_relu(alpha_leak, h1-intercept_i)
+        h22 = get_leaky_relu(alpha_leak, h2-intercept_i)
+        h32 = get_leaky_relu(alpha_leak, h3-intercept_i)
+        h42 = get_leaky_relu(alpha_leak, h4-intercept_i)
+        Ii_t2[m] = h12+h22+h32+h42
+        
+        h1 = get_leaky_relu(alpha_leak, h1)
+        h2 = get_leaky_relu(alpha_leak, h2)
+        h3 = get_leaky_relu(alpha_leak, h3)
+        h4 = get_leaky_relu(alpha_leak, h4)
+        Ii_t[m] = h1+h2+h3+h4
+        output_t[m] = output_t[m] - (h1+h2+h3+h4)
+        # relu
+        output_t[m] = get_leaky_relu(alpha_leak, output_t[m])
+    
+    return output_t, Ie_t, Ii_t, Ii_t2
+
+
+# response of a LPLC2 neuron
+def get_response_with_rectified_inhibition(\
+    args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity=0, intensity=0):
+    '''
+    Args:
+    args: other arguments
+    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
+    weights_i: weights for inhibitory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
+    intercept_e: intercept in the activation function for LPLC2 neuron
+    UV_flow: flow field
+    alpha_leak: slope for leaky relu
+    
+    Returns:
+    res_rest: baseline response when there is no stimuli
+    res_T: response of a LPLC2 neuron
+    Ie_T: excitatory component without thresholding
+    Ii_T: inhibitory component with thresholding
+    Ii_T2: inhibitory component without thresholding
+    '''
+    n = args['n']
+    tau_1 = args['tau_1']
+    dt = args['dt']
+    alpha_leak = args['alpha_leak']
+    T = len(UV_flow)
+    M = len(UV_flow[0])
+    res_T = np.zeros((T, M))
+    Ie_T = np.zeros((T, M))
+    Ii_T = np.zeros((T, M))
+    Ii_T2 = np.zeros((T, M))
+    UV_flow_0 = np.zeros((M, 1))
+    if weights_intensity:
+        res_rest, _, _, _ = get_output_with_rectified_inhibition(\
+            weights_e, weights_i, intercept_e, intercept_i, UV_flow_0, alpha_leak, weights_intensity, intensity_[t])
+        for t in range(T):
+            output_t, Ie_t, Ii_t, Ii_t2 = get_output_with_rectified_inhibition(\
+                weights_e, weights_i, intercept_e, intercept_i, UV_flow[t], alpha_leak, weights_intensity, intensity_[t])
+            res_T[t, :] = output_t[:]
+            Ie_T[t, :] = Ie_t[:]
+            Ii_T[t, :] = Ii_t[:]
+            Ii_T2[t, :] = Ii_t2[:]
+    else:
+        res_rest, _, _, _ = get_output_with_rectified_inhibition(\
+                weights_e, weights_i, intercept_e, intercept_i, UV_flow_0, alpha_leak)
+        for t in range(T):
+            output_t, Ie_t, Ii_t, Ii_t2 = get_output_with_rectified_inhibition(\
+                weights_e, weights_i, intercept_e, intercept_i, UV_flow[t], alpha_leak)
+            res_T[t, :] = output_t[:]
+            Ie_T[t, :] = Ie_t[:]
+            Ii_T[t, :] = Ii_t[:]
+            Ii_T2[t, :] = Ii_t2[:]
+    
+    return res_rest, res_T, Ie_T, Ii_T, Ii_T2
+
+
+# Plot the filtered responses on given trajectory
+def plot_response_over_time(\
+    args, model_path, model_type, figuretype, res_T_2Fa_max, UV_flow_files, intensity_files, ymin, ymax_dict, filename):
+    '''
+    Args:
+    args: a dictionary that contains problem parameters
+    model_path: a directory that contains pre-trained model parameters
+    model_type: model type
+    UV_flow_files: files that contains UV flow
+    intensity_files: files that contains frame intensities
+    filename: filename to save
+    '''
+    K = args['K']
+    alpha_leak = args['alpha_leak']
+    a = np.load(model_path + "trained_a.npy")
+    b = np.load(model_path + "trained_b.npy")
+    
+    intercept_e = np.load(model_path + "trained_intercept_e.npy")
+    tau_1 = np.load(model_path + "trained_tau_1.npy")
+    weights_e = np.load(model_path + "trained_weights_e.npy")
+#     weights_e = 1./(1.+np.exp(-weights_e))
+    if model_type == 'rectified inhibition':
+        weights_i = np.load(model_path + "trained_weights_i.npy")
+#         weights_i = 1./(1.+np.exp(-weights_i))
+        intercept_i = np.load(model_path + "trained_intercept_i.npy")
+    weights_intensity = None
+    if args["use_intensity"]:
+        weights_intensity = np.load(model_path + "trained_weights_intensity.npy")
+    if args['temporal_filter']:
+        args['n'] = 1
+    
+    res_max = 0.
+    for ind, UV_flow_file in enumerate(UV_flow_files):
+        UV_flow = np.load(UV_flow_file)
+        intensity = None
+        if args['use_intensity']:
+            intensity = np.load(intensity_files[ind])
+            assert(len(intensity) == len(UV_flow_))
+        if model_type == 'linear':
+            res_T = get_response_excitatory_only(\
+                args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
+        elif model_type == 'rectified inhibition':
+            res_rest, res_T, _, _ = get_response_with_inhibition2(\
+                args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity)
+        res_max = np.maximum(res_max, res_T.max())
+        
+    fig = plt.figure(figsize=(1.5*len(UV_flow_files), 1.5))
+    for ind, UV_flow_file in enumerate(UV_flow_files):
+        UV_flow = np.load(UV_flow_file)
+        intensity = None
+        if args['use_intensity']:
+            intensity = np.load(intensity_files[ind])
+            assert(len(intensity) == len(UV_flow_))
+        if model_type == 'linear':
+            res_T = get_response_excitatory_only(\
+                args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
+        elif model_type == 'rectified inhibition':
+            res_rest, res_T, _, _ = get_response_with_inhibition2(\
+                args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity)
+        plt.subplot(1, len(UV_flow_files), ind+1)
+        if figuretype == '2F':
+            res_to_tem = res_T-res_T[0]
+            res_to_plot = np.zeros_like(res_to_tem)
+            for t in range(res_to_plot.shape[0]):
+                res_to_plot[t] = general_temp_filter(0, 0.1, 0.01, res_to_tem[:t+1])
+            plt.plot(np.arange(len(res_T)), res_to_plot, c='k', linewidth=1)
+            ymax = res_max-res_T[0]
+        else:
+            res_to_tem = (res_T-res_T[0])/res_T_2Fa_max
+            res_to_plot = np.zeros_like(res_to_tem)
+            for t in range(res_to_plot.shape[0]):
+                res_to_plot[t] = general_temp_filter(0, 0.1, 0.01, res_to_tem[:t+1])
+            plt.plot(np.arange(len(res_T)), res_to_plot, c='k', linewidth=1)
+            ymax = (res_max-res_T[0])/res_T_2Fa_max
+            ymax = ymax_dict[figuretype]
+        plt.ylim([ymin, ymax])
+        plt.xticks([])
+        plt.yticks([])
+        plt.axis('off')
+    fig.savefig(filename, bbox_inches='tight')
+    plt.close()
+
+
+########################################
+####### Plot and display weights #######
+########################################
+
 # Plot the one trained frame intensity weights
 def plot_intensity_weights(input_weights, mask_d, colormap, filename):
     '''
@@ -185,567 +524,173 @@ def plot_predefined_weights(theta_dt, K, L, filename):
     fig.savefig(filename, bbox_inches='tight')
     
     
-def make_set_folder(set_number, savepath):
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/hit/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/hit/UV_flow_samples')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/miss/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/miss/UV_flow_samples')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/retreat/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/retreat/UV_flow_samples')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/rotation/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/rotation/UV_flow_samples')
+def display_weights(\
+    K, trained_weights_e_all, trained_weights_i_all, has_inhibition, sample_list, n_sample, mask_d, colormap_e, colormap_i):
+    fig = plt.figure(figsize=(2*n_sample*0.8, 0.8))
+    for ind, label in enumerate(sample_list):
+        trained_weights_e = trained_weights_e_all[label, :].reshape((K, K))
+        trained_weights_e[mask_d] = 0.
+        extreme_e = np.amax(np.abs(trained_weights_e))
+        if has_inhibition:
+            color_norm_e = mpl.colors.Normalize(vmin=0, vmax=extreme_e)
+        else:
+            color_norm_e = mpl.colors.Normalize(vmin=-extreme_e, vmax=extreme_e)
+        plt.subplot(1, 2*n_sample, ind+1)
+        plt.imshow(trained_weights_e, norm=color_norm_e, cmap=colormap_e)
+        plt.xticks([])
+        plt.yticks([])
+        plt.colorbar(orientation='horizontal', fraction=.03)
+        if has_inhibition:
+            trained_weights_i = trained_weights_i_all[label, :].reshape((K, K))
+            trained_weights_i[mask_d] = 0.
+            extreme_i = np.amax(np.abs(trained_weights_i))
+            color_norm_i = mpl.colors.Normalize(vmin=0, vmax=extreme_i)
+            plt.subplot(1, 2*n_sample, ind+1+len(sample_list))
+            plt.imshow(trained_weights_i, norm=color_norm_i, cmap=colormap_i)
+            plt.xticks([])
+            plt.yticks([])
+            plt.colorbar(orientation='horizontal', fraction=.03)
+    plt.show()
     
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/hit/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/hit/UV_flow_samples')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/miss/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/miss/UV_flow_samples')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/retreat/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/retreat/UV_flow_samples')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/rotation/intensities_samples_cg')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/rotation/UV_flow_samples')
+    return fig
+
+
+def display_weights2(K, input_weights, mask_d, colormap, M):
+    N = input_weights.shape[0]
+    fig = plt.figure(figsize=(M*4, 4))
     
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/hit/trajectories')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/hit/distances')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/hit/distances/sample')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/miss/trajectories')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/miss/distances')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/miss/distances/sample')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/retreat/trajectories')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/retreat/distances')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/retreat/distances/sample')
-    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/rotation/trajectories')
-
-
-# Plot the distances versus test error of a pre-trained model
-def plot_distance_error(args, pretrained_model_dir, model_number):
-    '''
-    Args:
-    args: a dictionary that contains problem parameters
-    pretrained_model_dir: a directory that contains pre-trained model parameters
-    model_number: 1 or 2 or 3
-    '''
-    set_number = args["set_number"]
-    dt = args["dt"]
-    datapath = args["datapath"]
-    K = args['K']
-
-    file_types = ['loom_hit', 'loom_nohit']
-    #file_types = ['loom_hit']
-    test_flows = []
-    test_intensities = []
-    test_labels = []
-    test_distances = []
-    for file_type in file_types:
-        # gather testing paths and labels
-        test_path = datapath + 'set_{}/testing/'.format(set_number) + file_type + '/UV_flow_samples/'
-        if os.path.isdir(test_path):
-            test_files = glob.glob(test_path + '*.npy')
-            for test_flow_file in test_files:
-                test_intensity_file = test_flow_file.replace('UV_flow_samples', 'intensities_samples_cg')
-                test_intensity_file = test_intensity_file.replace('UV_flow_sample', 'intensities_sample_cg')
-                test_distance_file = test_flow_file.replace('testing', 'other_info/distances')
-                test_distance_file = test_distance_file.replace('UV_flow_samples/UV_flow_sample', 'distance')
-                test_flow =  np.load(test_flow_file)
-                test_intensity = np.load(test_intensity_file)
-                test_distance = np.load(test_distance_file)
-                test_steps = test_flow.shape[0]
-                if file_type == 'loom_hit':
-                    test_label = np.ones(test_steps)
-                else:
-                    test_label = np.zeros(test_steps)
-                test_flows.append(test_flow)
-                test_intensities.append(test_intensity)
-                test_distances.append(test_distance[-1])
-                test_labels.append(test_label)
-    N_test = len(test_flows)
-
-    UV_flow = tf.compat.v1.placeholder(tf.float32, [None, K*K, 4], name='UV_flow')
-    labels = tf.compat.v1.placeholder(tf.float32, [None], name='labels')
-    intensity = None
-    if args['use_intensity']:
-        intensity = tf.compat.v1.placeholder(tf.float32, 
-            [None, K*K], name='intensity')
-
-    a = np.load(pretrained_model_dir + "trained_a.npy")
-    b = np.load(pretrained_model_dir + "trained_b.npy")
-    intercept_e = np.load(pretrained_model_dir + "trained_intercept_e.npy")
-    tau_1 = np.load(pretrained_model_dir + "trained_tau_1.npy")
-    weights_e = np.load(pretrained_model_dir + "trained_weights_e.npy")
-    #print(a, b, tau_1, intercept_e)
-
-    if args["symmetrize"]:
-        weights_e = weights_e[:, 0]
-    if model_number == 2 or model_number == 3:
-        weights_i = np.load(pretrained_model_dir + "trained_weights_i.npy")
-        if args["symmetrize"]:
-            weights_i = weights_i[:, 0]
-    if model_number == 3:
-        intercept_i = np.load(pretrained_model_dir + "trained_intercept_i.npy")
-        #print(intercept_i)
-    weights_intensity = None
-    if args["use_intensity"]:
-        weights_intensity = np.load(pretrained_model_dir + "trained_weights_intensity.npy")
-
-    if model_number == 1:
-        loss, error_step, error_trajectory, filtered_res, _ = lplc2.loss_error_C_excitatory_only(args, 
-        weights_e, weights_intensity, intercept_e, UV_flow, intensity, 
-        labels, tau_1, a, b)
-    elif model_number == 2:
-        loss, error_step, error_trajectory, filtered_res, _  = lplc2.loss_error_C_inhibitory1(args, 
-            weights_e, weights_i, weights_intensity, intercept_e, UV_flow, 
-            intensity, labels, tau_1, a, b)
-    elif model_number == 3:
-        loss, error_step, error_trajectory, filtered_res, _ = lplc2.loss_error_C_inhibitory2(args, 
-            weights_e, weights_i, weights_intensity, intercept_e, intercept_i, 
-            UV_flow, intensity, labels, tau_1, a, b)
-
-    error_list = []
-    error_loomnohit = []
-    predicted_steps = []
-    distance = []
-    with tf.compat.v1.Session() as sess:
-        for sample_i in range(N_test):
-            if args['use_intensity']:
-                error_i, response_i = sess.run([error_trajectory, filtered_res], 
-                    {UV_flow:test_flows[sample_i], labels:test_labels[sample_i], 
-                    intensity: test_intensities[sample_i]})
-            else:
-                error_i, response_i = sess.run([error_trajectory, filtered_res], 
-                    {UV_flow:test_flows[sample_i], labels:test_labels[sample_i]})
-            if test_labels[sample_i][0] == 1:
-                error_list.append(error_i)
-                distance.append(test_distances[sample_i])
-                logits_i = np.abs(a) * response_i + b
-                predictions_i = np.round(sigmoid_array(logits_i))
-                if np.amax(predictions_i) > 0:
-                    predicted_steps.append(np.argmax(predictions_i) + 1)
-            else:
-                error_loomnohit.append(error_i)
-    print("{}/{} = {} loom_hit samples are predicted wrong".format(sum(error_list), 
-        len(error_list), str(np.mean(error_list))))
-    if len(error_loomnohit) > 0:
-        print("{}/{} = {} loom_nohit samples are predicted wrong".format(sum(error_loomnohit), 
-            len(error_loomnohit), str(np.mean(error_loomnohit))))
-    print("Average time step for escape is " + str(np.around(np.mean(predicted_steps), 3)))
-    with open(pretrained_model_dir + "investigate_output.txt", 'w') as f:
-        f.write("{}/{} = {} loom_hit samples are predicted wrong\n".format(sum(error_list), 
-        len(error_list), str(np.around(np.mean(error_list), 3))))
-        if len(error_loomnohit) > 0:
-            f.write("{}/{} = {} loom_nohit samples are predicted wrong\n".format(sum(error_loomnohit), 
-            len(error_loomnohit), str(np.around(np.mean(error_loomnohit), 3))))
-        f.write("Average time step for escape is " + str(np.around(np.mean(predicted_steps), 3)))
-    correct = ["correct" if error < 0.5 else "incorrect" for error in error_list]
-    fig = plt.figure(figsize=(5, 5))
-    sns.boxplot(x=correct, y=distance).set(ylabel='Distance')
-    fig.savefig(pretrained_model_dir + "distance_error.pdf")
-
-
-def sigmoid_array(x): 
-    return 1 / (1 + np.exp(-x))
-
-
-# temporal filter
-def get_tem_filtered_traj(traj, sigma):
-    traj_filtered = np.zeros_like(traj)
-    P = traj.shape[1]
-    dims = traj.shape[2]
-    assert dims == 3, 'The dimension should be 3!'
-    for p in range(P):
-        for i in range(dims):
-            traj_filtered[:, p, i] = gaussian_filter(traj[:, p, i], sigma=sigma, mode='nearest')
+    weights_matrix = input_weights[0, :].reshape((K, K))
+    weights_matrix[mask_d] = 0.
+    extreme = np.amax(np.abs(input_weights))
+    color_norm = mpl.colors.Normalize(vmin=-extreme, vmax=extreme)
+    plt.subplot(1, M, 1)
+    plt.imshow(weights_matrix, norm=color_norm, cmap=colormap)
+    plt.colorbar()
+    
+    for m in range(1, M-1):
+        weights_matrix = input_weights[m*np.int((N-2)/(M-2)), :].reshape((K, K))
+        weights_matrix[mask_d] = 0.
+        color_norm = mpl.colors.Normalize(vmin=-extreme, vmax=extreme)
+        plt.subplot(1, M, m+1)
+        plt.imshow(weights_matrix, norm=color_norm, cmap=colormap)
+        plt.colorbar()
         
-    return traj_filtered
-
-
-# generate file paths for train and test data
-def generate_train_test_file_paths(args):
-    '''
-    Args:
-    args: a dictionary that contains problem parameters
-
-    Returns:
-    train_flow_files: list of files for UV flows from for training
-    train_intensity_files: list of files for frame intensities for training
-    train_labels: list of labels (probability of hit, either 0 or 1) for training
-    test_flow_files: list of files for UV flows from for testing
-    test_intensity_files: list of files for frame intensities for testing
-    test_labels: list of labels (probability of hit, either 0 or 1) for testing
-    '''
-    start = time.time()
-    print('Generating train and test file paths')
-
-    set_number = args['set_number']
-    data_path = args['data_path']
-
-    file_types = ['hit', 'miss', 'retreat', 'rotation']
+    weights_matrix = input_weights[-1, :].reshape((K, K))
+    weights_matrix[mask_d] = 0.
+    color_norm = mpl.colors.Normalize(vmin=-extreme, vmax=extreme)
+    plt.subplot(1, M, M)
+    plt.imshow(weights_matrix, norm=color_norm, cmap=colormap)
+    plt.colorbar()
+    plt.show()
     
-    train_flow_files = []
-    train_intensity_files = []
-    train_distances = []
-    train_labels = []
-    test_flow_files = []
-    test_intensity_files = []
-    test_distances = []
-    test_labels = []
-    rotational_train_flow_files = []
-    rotational_train_intensity_files = []
-    rotational_train_distances = []
-    rotational_train_labels = []
-    rotational_test_flow_files = []
-    rotational_test_intensity_files = []
-    rotational_test_distances = []
-    rotational_test_labels = []
-    for file_type in file_types:
-        # gather training paths and labels
-        train_path = data_path + 'set_{}/training/'.format(set_number) + \
-        file_type + '/UV_flow_samples/'
-        if os.path.isdir(train_path):
-            train_files = glob.glob(train_path + '*.npy')
-            for train_flow_file in train_files:
-                train_intensity_file = train_flow_file.replace('UV_flow_samples', 
-                    'intensities_samples_cg')
-                train_intensity_file = train_intensity_file.replace('UV_flow_sample', 
-                    'intensities_sample_cg')
-                train_distance_file = train_flow_file.replace('training', 
-                    'other_info')
-                train_distance_file = train_distance_file.replace('UV_flow_samples', 
-                    'distances')
-                train_distance_file = train_distance_file.replace('UV_flow_sample', 
-                    'distance')
-                train_flow =  np.load(train_flow_file, allow_pickle=True)
-                train_steps = train_flow.shape[0]
-                if file_type == 'hit':
-                    train_label = np.ones(10)
-                else:
-                    train_label = np.zeros(10)
-                if file_type == 'rotation':
-                    rotational_train_flow_files.append(train_flow_file)
-                    rotational_train_intensity_files.append(train_intensity_file)
-                    rotational_train_labels.append(train_label)
-                    rotational_train_distances.append(np.ones(train_steps))
-                else:
-                    train_flow_files.append(train_flow_file)
-                    train_intensity_files.append(train_intensity_file)
-                    train_labels.append(train_label)
-                    distances = np.load(train_distance_file, allow_pickle=True)
-                    distances_inverse = [1/item for sublist in distances for item in sublist]
-                    train_distances.append(np.asarray(distances_inverse))
+    return fig
 
-        # gather testing paths and labels
-        test_path = data_path + 'set_{}/testing/'.format(set_number) + \
-        file_type + '/UV_flow_samples/'
-        if os.path.isdir(test_path):
-            test_files = glob.glob(test_path + '*.npy')
-            for test_flow_file in test_files:
-                test_intensity_file = test_flow_file.replace('UV_flow_samples', 
-                    'intensities_samples_cg')
-                test_intensity_file = test_intensity_file.replace('UV_flow_sample', 
-                    'intensities_sample_cg')
-                test_distance_file = test_flow_file.replace('testing', 
-                    'other_info')
-                test_distance_file = test_distance_file.replace('UV_flow_samples', 
-                    'distances')
-                test_distance_file = test_distance_file.replace('UV_flow_sample', 
-                    'distance')
-                
-                test_flow =  np.load(test_flow_file, allow_pickle=True)
-                if file_type == 'hit':
-                    test_label = np.ones(10)
-                else:
-                    test_label = np.zeros(10)
-                if file_type == 'rotation':
-                    rotational_test_flow_files.append(test_flow_file)
-                    rotational_test_intensity_files.append(test_intensity_file)
-                    rotational_test_labels.append(test_label)
-                    rotational_test_distances.append(np.array([1]))
-                else:
-                    test_flow_files.append(test_flow_file)
-                    test_intensity_files.append(test_intensity_file)
-                    test_labels.append(test_label)
-                    distances = np.load(test_distance_file, allow_pickle=True)
-                    distances_inverse = [1/item for sublist in distances for item in sublist]
-                    test_distances.append(np.asarray(distances_inverse))
-    # subsample rotational files
-    rotational_train_index = random.sample(range(len(rotational_train_labels)), 
-        int(args['rotational_fraction']*len(rotational_train_labels)))
-    for index in rotational_train_index:
-        train_flow_files.append(rotational_train_flow_files[index])
-        train_intensity_files.append(rotational_train_intensity_files[index])
-        train_labels.append(rotational_train_labels[index])
-        train_distances.append(rotational_train_distances[index])
 
-    rotational_test_index = random.sample(range(len(rotational_test_labels)), 
-        int(args['rotational_fraction']*len(rotational_test_labels)))
-    for index in rotational_test_index:
-        test_flow_files.append(rotational_test_flow_files[index])
-        test_intensity_files.append(rotational_test_intensity_files[index])
-        test_labels.append(rotational_test_labels[index])
-        test_distances.append(rotational_test_distances[index])
+#########################################################
+####### Stimuli generation, plotting and analysis #######
+#########################################################
 
-    # shuffle data
-    temp = list(zip(train_flow_files, train_intensity_files, train_labels, train_distances)) 
-    random.shuffle(temp) 
-    train_flow_files, train_intensity_files, train_labels, train_distances = zip(*temp) 
-
-    temp = list(zip(test_flow_files, test_intensity_files, test_labels, test_distances)) 
-    random.shuffle(temp) 
-    test_flow_files, test_intensity_files, test_labels, test_distances = zip(*temp) 
+# Plot the trajectories in 3d
+def plot_trajectories(data_path, data_types, colors, filename):
+    fig = plt.figure(figsize=(5*len(data_types), 5))
+    for ind1, data_type in enumerate(data_types):
+        if data_type != 'rotation':
+            ax = fig.add_subplot(1, len(data_types), 1+ind1, projection='3d')
+            path = data_path+data_type+'/trajectories/'
+            files = glob.glob(path+'*.npy')
+            for ind2, file in enumerate(files):
+                if ind2%1 == 0:
+                    rn_arrs = np.load(file, allow_pickle=True)
+                    for rn_arr in rn_arrs:
+                        rn_arr = np.array(rn_arr)
+                        P = rn_arr.shape[1]
+                        for p in range(P):
+                            ax.plot(rn_arr[:, p, 0], rn_arr[:, p, 1], rn_arr[:, p, 2], c=colors[0], linewidth=1) 
+            for ind2, file in enumerate(files):
+                if ind2%1 == 0:
+                    rn_arrs = np.load(file, allow_pickle=True)
+                    for rn_arr in rn_arrs:
+                        rn_arr = np.array(rn_arr)
+                        P = rn_arr.shape[1]
+                        for p in range(P):
+                            ax.plot(rn_arr[0:1, p, 0], rn_arr[0:1, p, 1], rn_arr[0:1, p, 2], 'k.')
+            ax.plot([0], [0], [0], 'r.')    
+            ax.set_title(data_type)
+            ax.set_xlabel('x')
+            ax.set_ylabel('y')
+            ax.set_zlabel('z')
+        elif data_type == 'rotation':
+            ax = fig.add_subplot(1, len(data_types), 1+ind1, projection='3d')
+            path = data_path+data_type+'/trajectories/'
+            files = glob.glob(path+'*.npy')
+            rn_arrs = np.load(files[3], allow_pickle=True)
+            rn_arr = np.array(rn_arrs[9])
+            P = rn_arr.shape[1]
+            for p in range(P):
+                if p%1 == 0:
+                    ax.plot(rn_arr[:, p, 0], rn_arr[:, p, 1], rn_arr[:, p, 2], c=colors[1], linewidth=1)
+                    ax.plot(rn_arr[0:1, p, 0], rn_arr[0:1, p, 1], rn_arr[0:1, p, 2], 'k.') 
+            ax.plot([0], [0], [0], 'r.')    
+            ax.set_title(data_type)
+            ax.set_xlabel('x')
+            ax.set_ylabel('y')
+            ax.set_zlabel('z')
+    fig.savefig(filename, bbox_inches='tight')
+    plt.show()
     
-    # group samples
-    S = args['S']
-    train_flow_files = get_grouped_list(train_flow_files, S)
-    train_intensity_files = get_grouped_list(train_intensity_files, S)
-    train_labels = get_grouped_list(train_labels, S)
-    train_distances = get_grouped_list(train_distances, S)
     
-    test_flow_files = get_grouped_list(test_flow_files, S)
-    test_intensity_files = get_grouped_list(test_intensity_files, S)
-    test_labels = get_grouped_list(test_labels, S)
-    test_distances = get_grouped_list(test_distances, S)
-
-    end = time.time()
-    print('Generated {} train samples and {} test samples'.format(len(train_flow_files), len(test_flow_files)))
-    print('Data generation took {:.0f} second'.format(end - start))
+# Plot the distances
+def plot_distances(data_path, data_types, colors, filename):
+    fig = plt.figure(figsize=(4*len(data_types), 4))
+    for ind1, data_type in enumerate(data_types):
+        if data_type != 'rotation':
+            T = 0
+            ax = fig.add_subplot(1, len(data_types), 1+ind1)
+            path = data_path+data_type+'/distances/full/'
+            files = glob.glob(path+'*.npy')
+            for ind2, file in enumerate(files):
+                if ind2%10 == 0:
+                    rn_arrs = np.load(file, allow_pickle=True)
+                    for rn_arr in rn_arrs:
+                        rn_arr = np.array(rn_arr)
+                        ax.plot(rn_arr, c=colors[0], linewidth=0.5)
+                        T = np.maximum(T, len(rn_arr))
+            path = data_path+data_type+'/distances/full/'
+            files = glob.glob(path+'*.npy')
+            for ind3, file in enumerate(files):
+                if ind3%10 == 0:
+                    rn_arrs = np.load(file, allow_pickle=True)
+                    for rn_arr in rn_arrs:
+                        rn_arr = np.array(rn_arr)
+                        ax.plot(rn_arr, c=colors[1], linewidth=0.5)
+            ax.plot(np.arange(T), np.ones(T), c='k', linewidth=0.5)
+            ax.set_title(data_type)
+            ax.set_xlabel('time step')
+            ax.set_ylabel('distance')
+        elif data_type == 'rotation':
+            ax = fig.add_subplot(1, len(data_types), 1+ind1)
+            path = data_path+data_type+'/trajectories/'
+            files = glob.glob(path+'*.npy')
+            rn_arrs = np.load(files[3], allow_pickle=True)
+            rn_arr = np.array(rn_arrs[9])
+            T = rn_arr.shape[0]
+            P = rn_arr.shape[1]
+            for p in range(P):
+                if p%1 == 0:
+                    ci = rn_arr[0][p]
+                    Di = dn3d.get_radial_distance(ci[0], ci[1], ci[2])
+                    cf = rn_arr[-1][p]
+                    Df = dn3d.get_radial_distance(cf[0], cf[1], cf[2])
+                ax.plot([0, T], [Di, Df], c=colors[1], linewidth=0.5)
+            ax.plot(np.arange(T), np.ones(T), c='k', linewidth=0.5)
+            ax.set_title(data_type)
+            ax.set_xlabel('time step')
+            ax.set_ylabel('distance')
+            
+    fig.savefig(filename, bbox_inches='tight')
+    plt.show()
     
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_flow_files', train_flow_files)
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_intensity_files', train_intensity_files)
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_labels', train_labels)
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_distances', train_distances)
-    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_flow_files', test_flow_files)
-    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_intensity_files', test_intensity_files)
-    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_labels', test_labels)
-    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_distances', test_distances)
     
-    return train_flow_files, train_intensity_files, train_labels, train_distances, \
-           test_flow_files, test_intensity_files, test_labels, test_distances
-
-
-# generate file paths for train data
-def generate_train_data(args):
-    '''
-    Args:
-    args: a dictionary that contains problem parameters
-
-    Returns:
-    train_flow_files: list of files for UV flows from for training
-    train_intensity_files: list of files for frame intensities for training
-    train_labels: list of labels (probability of hit, either 0 or 1) for training
-    '''
-
-    set_number = args['set_number']
-    data_path = args['data_path']
-    NNs = args['NNs']
-
-    file_types = ['hit', 'miss', 'retreat', 'rotation']
-    
-    train_flow_files = []
-    train_intensity_files = []
-    train_distances = []
-    train_labels = []
-    
-    rotational_train_flow_files = []
-    rotational_train_intensity_files = []
-    rotational_train_distances = []
-    rotational_train_labels = []
-    
-    for file_type in file_types:
-        # gather training paths and labels
-        train_path = data_path + 'set_{}/training/'.format(set_number) + \
-        file_type + '/UV_flow_samples/'
-        if os.path.isdir(train_path):
-            train_files = glob.glob(train_path + '*.npy')
-            for train_flow_file in train_files:
-                train_intensity_file = train_flow_file.replace('UV_flow_samples', 
-                    'intensities_samples_cg')
-                train_intensity_file = train_intensity_file.replace('UV_flow_sample', 
-                    'intensities_sample_cg')
-                train_distance_file = train_flow_file.replace('training', 
-                    'other_info')
-                train_distance_file = train_distance_file.replace('UV_flow_samples', 
-                    'distances')
-                train_distance_file = train_distance_file.replace('UV_flow_sample', 
-                    'distance')
-                train_flow =  np.load(train_flow_file, allow_pickle=True)
-                train_steps = train_flow.shape[0]
-                if file_type == 'hit':
-                    train_label = np.ones(NNs)
-                else:
-                    train_label = np.zeros(NNs)
-                if file_type == 'rotation':
-                    rotational_train_flow_files.append(train_flow_file)
-                    rotational_train_intensity_files.append(train_intensity_file)
-                    rotational_train_labels.append(train_label)
-                    rotational_train_distances.append(np.ones(train_steps))
-                else:
-                    train_flow_files.append(train_flow_file)
-                    train_intensity_files.append(train_intensity_file)
-                    train_labels.append(train_label)
-                    distances = np.load(train_distance_file, allow_pickle=True)
-                    distances_inverse = [1/item for sublist in distances for item in sublist]
-                    train_distances.append(np.asarray(distances_inverse))
-
-    # subsample rotational files
-    rotational_train_index = random.sample(range(len(rotational_train_labels)), 
-        int(args['rotational_fraction']*len(rotational_train_labels)))
-    for index in rotational_train_index:
-        train_flow_files.append(rotational_train_flow_files[index])
-        train_intensity_files.append(rotational_train_intensity_files[index])
-        train_labels.append(rotational_train_labels[index])
-        train_distances.append(rotational_train_distances[index])
-
-    # shuffle data
-    temp = list(zip(train_flow_files, train_intensity_files, train_labels, train_distances)) 
-    random.shuffle(temp) 
-    train_flow_files, train_intensity_files, train_labels, train_distances = zip(*temp) 
-    
-    # group samples
-    S = args['S']
-    train_flow_files = get_grouped_list(train_flow_files, S)
-    train_intensity_files = get_grouped_list(train_intensity_files, S)
-    train_labels = get_grouped_list(train_labels, S)
-    train_distances = get_grouped_list(train_distances, S)
-    
-    # sampling
-    train_flow_snapshots = []
-    train_intensity_snapshots = []
-    train_labels_snapshots = []
-    for file_path_flow, file_path_intensity, labels in zip(train_flow_files, train_intensity_files, train_labels):
-        steps_list_flow = []
-        steps_list_intensity = []
-        for s in range(S):
-            data_flow = np.load(file_path_flow[s], allow_pickle=True)
-            data_intensity = np.load(file_path_intensity[s], allow_pickle=True)
-            for dd in range(len(data_flow)): # len(data) indicates number of data samples in one data sample list
-                i = random.randint(0, len(data_flow[dd])-1) # randomly select one snapshot
-                step_flow = []
-                step_intensity = []
-                for j in range(len(data_flow[dd][i])): # len(data[dd][i]) indicates M
-                    if len(data_flow[dd][i][j].shape) == 1:
-                        step_flow.append(np.zeros((args['K']**2, 4)))
-                        step_intensity.append(np.zeros((args['K']**2)))
-                    else:
-                        step_flow.append(data_flow[dd][i][j])
-                        step_intensity.append(data_intensity[dd][i][j])
-                steps_list_flow.append(np.stack([np.stack(step_flow)]))
-                steps_list_intensity.append(np.stack([np.stack(step_intensity)]))
-        steps_list_extended_flow = []
-        steps_list_extended_intensity = []
-        weight_list_extended = []
-        label_list_extended = []
-        labels = np.array(labels).flatten()
-        for n in range(S*NNs):
-            steps_extended_flow, weight_extended, label_extended \
-                = get_extended_array(steps_list_flow[n], labels[n], 1)
-            steps_extended_intensity, weight_extended, label_extended \
-                = get_extended_array(steps_list_intensity[n], labels[n], 1)
-            steps_list_extended_flow.append(steps_extended_flow)
-            steps_list_extended_intensity.append(steps_extended_intensity)
-            weight_list_extended.append(weight_extended)
-            label_list_extended.append(label_extended)
-        steps_list_extended_flow = np.swapaxes(np.stack(steps_list_extended_flow), 0, 1)
-        steps_list_extended_intensity = np.swapaxes(np.stack(steps_list_extended_intensity), 0, 1)
-        weight_list_extended = np.swapaxes(np.stack(weight_list_extended), 0, 1)
-        label_list_extended = np.swapaxes(np.stack(label_list_extended), 0, 1)
-        
-        train_flow_snapshots.append(steps_list_extended_flow)
-        train_intensity_snapshots.append(steps_list_extended_intensity)
-        train_labels_snapshots.append(label_list_extended)
-        
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_flow_snapshots', train_flow_snapshots)
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_intensity_snapshots', train_intensity_snapshots)
-    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_labels_snapshots', train_labels_snapshots)
-
-
-def load_compressed_dataset(args, file_path, labels):
-    """
-    This function loads compressed datasets, and prepares them for training fand testing.
-    
-    Args:
-    args: a dictionary that contains problem parameters
-    file_path: a list of file paths
-    labels: labels of the data contained in file paths
-    
-    Returns:
-    steps_list_extended: expanded and extended data
-    weight_list_extended: extended step weights
-    label_list_extended: extended labels
-    """
-    N = len(file_path)
-    T = 0
-    steps_list = []
-    for n in range(N):
-        data = np.load(file_path[n], allow_pickle=True)
-        for dd in range(len(data)): # len(data) indicates number of data samples in one data sample list
-            steps = []
-            T = np.maximum(T, len(data[dd])) # len(data[dd]) indicates total time steps
-            for i in range(len(data[dd])):
-                step = []
-                for j in range(args['M']): 
-                    if len(data[dd][i][j].shape) == 1:
-                        step.append(np.zeros((args['K']**2, 4)))
-                    else:
-                        step.append(data[dd][i][j])
-                steps.append(np.stack(step))
-            steps_list.append(np.stack(steps))
-    steps_list_extended = []
-    weight_list_extended = []
-    label_list_extended = []
-    for n in range(N*len(data)):
-        steps_extended, weight_extended, label_extended = get_extended_array(steps_list[n], labels[n], T)
-        steps_list_extended.append(steps_extended)
-        weight_list_extended.append(weight_extended)
-        label_list_extended.append(label_extended)
-    steps_list_extended = np.swapaxes(np.stack(steps_list_extended), 0, 1)
-    weight_list_extended = np.swapaxes(np.stack(weight_list_extended), 0, 1)
-    label_list_extended = np.swapaxes(np.stack(label_list_extended), 0, 1)
-    
-    return steps_list_extended, weight_list_extended, label_list_extended
-
-
-def get_grouped_list(input_list, S):
-    '''
-    Args:
-    input_list: # of sample data files in the folder, each sample data here is a list
-    S: # of sample data list in one batch in mini-batch training
-    
-    Returns:
-    output_list: a list of mini batches, len(output_list) =  # of mini batches in one training epoch
-    '''
-    output_list = []
-    N = np.int(len(input_list)/S)
-    for n in range(N):
-        tem_list = input_list[n*S:(n+1)*S]
-        output_list.append(tem_list)
-        
-    return output_list
-
-
-def get_extended_array(input_array, label, T):
-    """
-    This function extends the data sample (input_array) in certain batch to let it have the same
-    time dimension (T) as others.
-    
-    Args:
-    input_array: input array
-    label: scaler, label of the current input array
-    T: target length of the time dimension
-    
-    Returns:
-    output_array: extended data array
-    output_weight: extended step weights
-    output_label: extended label
-    """
-    T0 = input_array.shape[0]
-    output_array = np.zeros((T, )+input_array.shape[1:])
-    output_array[:T0] = input_array
-    output_weight = np.zeros(T)
-    output_weight[:T0] = 1./T0
-    output_label = np.zeros(T)
-    output_label[:] = label
-    
-    return output_array, output_weight, output_label
-
-
 # generate one sample of optical stimulus, using exponential filters     
 def generate_one_sample_exp(M, Rs, traj, sigma, theta_r, theta_matrix, coord_matrix, space_filter, K, L, dt, sample_dt, delay_dt):
     '''
@@ -1337,6 +1282,335 @@ def get_distribution_pixel_all(K, data_path, set_number, data_type):
     return velocities_all
 
 
+# get the velocity 
+def get_velocity_train_test(data_path, data_types, save_path=None):
+    '''
+    Args:
+    data_path: path where the data is saved.
+    data_types: data types
+    '''
+    LL = len(data_types)
+    N_train = np.zeros(LL)
+    N_test = np.zeros(LL)
+    X_training = []
+    y_training = []
+    for data_type in data_types:
+        path = data_path+'training/'+data_type+'/UV_flow_samples/'
+        if os.path.isdir(path):
+            files = glob.glob(path+'*.npy')
+            for index in np.arange(len(files)):
+                rn_arrs = np.load(files[index], allow_pickle=True)
+                for rn_arr in rn_arrs:
+                    steps = len(rn_arr)
+                    if steps > 0:
+                        if data_type == 'hit':
+                            N_train[0] = N_train[0]+1
+                        elif data_type == 'miss':
+                            N_train[1] = N_train[1]+1
+                        elif data_type == 'retreat':
+                            N_train[2] = N_train[2]+1
+                        elif data_type == 'rotation':
+                            N_train[3] = N_train[3]+1
+                        M = len(rn_arr[0])
+                        XM = np.zeros(M)
+                        for m in range(M):
+                            vm = 0
+                            for step in range(steps):
+                                vm = np.maximum(vm, rn_arr[step][m].max())
+                            XM[m] = vm
+                        X_training.append(XM)
+                        if data_type == 'hit':
+                            y_training.append([1])
+                        else:
+                            y_training.append([0])
+                    else:
+                        print('Empty array!')
+    X_testing = []
+    y_testing = []
+    for data_type in data_types:
+        path = data_path+'testing/'+data_type+'/UV_flow_samples/'
+        if os.path.isdir(path):
+            files = glob.glob(path+'*.npy')
+            for index in np.arange(len(files)):
+                rn_arrs = np.load(files[index], allow_pickle=True)
+                for rn_arr in rn_arrs:
+                    if data_type == 'hit':
+                        N_test[0] = N_test[0]+1
+                    elif data_type == 'miss':
+                        N_test[1] = N_test[1]+1
+                    elif data_type == 'retreat':
+                        N_test[2] = N_test[2]+1
+                    elif data_type == 'rotation':
+                        N_test[3] = N_test[3]+1
+                    steps = len(rn_arr)
+                    M = len(rn_arr[0])
+                    XM = np.zeros(M)
+                    for m in range(M):
+                        vm = 0
+                        for step in range(steps):
+                            vm = np.maximum(vm, rn_arr[step][m].max())
+                        XM[m] = vm
+                    X_testing.append(XM)
+                    if data_type == 'hit':
+                        y_testing.append([1])
+                    else:
+                        y_testing.append([0])
+    X_training = np.array(X_training, np.float32)
+    y_training = np.array(y_training, np.float32)
+    X_testing = np.array(X_testing, np.float32)
+    y_testing = np.array(y_testing, np.float32)
+    if save_path:
+        np.savez(save_path, N_train, N_test, X_training, y_training, X_testing, y_testing)
+        
+    return N_train.astype(np.int), N_test.astype(np.int), X_training, y_training, X_testing, y_testing
+
+
+# get the velocity design matrix
+def get_velocity_nonzero(data_path, data_types):
+    '''
+    Args:
+    data_path: path where the data is saved.
+    data_types: data types
+    '''
+    V_hit = []
+    V_miss = []
+    V_retreat = []
+    V_rotation = []
+    for data_type in data_types:
+        path = data_path+'training/'+data_type+'/UV_flow_samples/'
+        if os.path.isdir(path):
+            files = glob.glob(path+'*.npy')
+            for index in np.arange(len(files)):
+                rn_arrs = np.load(files[index], allow_pickle=True)
+                for rn_arr in rn_arrs:
+                    steps = len(rn_arr)
+                    M = len(rn_arr[0])
+                    for m in range(M):
+                        for step in range(steps):
+                            if rn_arr[step][m].shape[0] > 1:
+                                if data_type == 'hit':
+                                    r_to_append = rn_arr[step][m].flatten()
+                                    V_hit.extend(r_to_append[r_to_append>0])
+                                elif data_type == 'miss':
+                                    r_to_append = rn_arr[step][m].flatten()
+                                    V_miss.extend(r_to_append[r_to_append>0])
+                                elif data_type == 'retreat':
+                                    r_to_append = rn_arr[step][m].flatten()
+                                    V_retreat.extend(r_to_append[r_to_append>0])
+                                elif data_type == 'rotation':
+                                    r_to_append = rn_arr[step][m].flatten()
+                                    V_rotation.extend(r_to_append[r_to_append>0])
+    
+    return np.array(V_hit).flatten(), np.array(V_miss).flatten(), np.array(V_retreat).flatten(), np.array(V_rotation).flatten()
+
+
+def plot_KLapoetke_intensities_extended(intensities, dt, savepath, name):
+    intensities = np.squeeze(intensities)
+    steps = intensities.shape[0]
+    combined_movies_list = []
+    for step in range(steps):
+        save_intensity(intensities[step], step, savepath+name)
+        combined_movies = imageio.imread(savepath+name+'_{}.png'.format(step+1))
+        combined_movies_list.append(combined_movies)
+    movie_name = savepath+name+'.mp4'
+    imageio.mimsave(movie_name, combined_movies_list, fps = np.int(1/dt))
+
+    
+def save_intensity(intensity, step, save_name):
+    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+    ax.imshow(intensity, cmap='gray_r', vmin=0, vmax=1)
+#         ax.vlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
+#         ax.hlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
+    fig.savefig(save_name+'_{}.png'.format(step+1))
+    plt.close(fig)
+    
+    
+def plot_KLapoetke_UV_flows(UV_flow, K, L, pad, dt, savepath, name):
+    leftup_corners = opsg.get_leftup_corners(K, L, pad)
+    steps = UV_flow.shape[0]
+    combined_movies_u_list = []
+    combined_movies_v_list = []
+    for step in range(steps):
+        cf_u, cf_v = flfd.set_flow_fields_on_frame(UV_flow[step], leftup_corners, K, L, pad)
+        u_flow = cf_u[0, :, :]
+        v_flow = cf_v[0, :, :]
+        save_uv_flow(u_flow, step, savepath+name+'_u')
+        save_uv_flow(v_flow, step, savepath+name+'_v')
+        combined_movies_u = imageio.imread(savepath+name+'_u_{}.png'.format(step+1))
+        combined_movies_u_list.append(combined_movies_u)
+        combined_movies_v = imageio.imread(savepath+name+'_v_{}.png'.format(step+1))
+        combined_movies_v_list.append(combined_movies_v)
+    movie_name_u = savepath+name+'_u.mp4'
+    imageio.mimsave(movie_name_u, combined_movies_u_list, fps = np.int(1/dt))
+    movie_name_v = savepath+name+'_v.mp4'
+    imageio.mimsave(movie_name_v, combined_movies_v_list, fps = np.int(1/dt))
+        
+        
+def save_uv_flow(flow, step, save_name):
+    myheat = LinearSegmentedColormap.from_list('br', ["b", "w", "r"], N=256)
+    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+    vmin=np.min(flow.flatten())
+    vmax=np.max(flow.flatten())
+    vmax = np.max([-vmin, vmax])
+    if vmax < 1e-6:
+        vmax = 1
+    vmax = 0.08
+    ax.imshow(flow, cmap=myheat, vmin=-vmax, vmax=vmax)
+    PCM=ax.get_children()[9] #get the mappable, the 1st and the 2nd are the x and y axes
+    plt.colorbar(PCM, ax=ax)
+#     ax.vlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
+#     ax.hlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
+    fig.savefig(save_name+'_{}.png'.format(step+1))
+    plt.close(fig)
+    
+    
+def plot_UV_flow_tem(UV_flow, p, image_name_u, image_name_v, movie_name_u, movie_name_v, fps, leftup_corners, K, L, pad, vmax=0.08):
+    steps = UV_flow.shape[0]
+    combined_movies_u_list = []
+    combined_movies_v_list = []
+    for step in range(steps):
+        if step%p == 0:
+            cf_u, cf_v = flfd.set_flow_fields_on_frame2(UV_flow[step, :, :, :], leftup_corners, K, L, pad)
+            u_flow = cf_u[0, :, :]
+            v_flow = cf_v[0, :, :]
+            gKse.save_uv_flow(u_flow, step, image_name_u, vmax)
+            gKse.save_uv_flow(v_flow, step, image_name_v, vmax)
+            combined_movies_u = imageio.imread(image_name_u+'_{}.png'.format(step+1))
+            combined_movies_u_list.append(combined_movies_u)
+            combined_movies_v = imageio.imread(image_name_v+'_{}.png'.format(step+1))
+            combined_movies_v_list.append(combined_movies_v)
+    imageio.mimsave(movie_name_u, combined_movies_u_list, fps = fps)
+    imageio.mimsave(movie_name_v, combined_movies_v_list, fps = fps)
+    
+    
+#####################################################################
+####### Many functions for data analysis and figure plotting #######
+#####################################################################
+
+# Plot the distances versus test error of a pre-trained model
+def plot_distance_error(args, pretrained_model_dir, model_number):
+    '''
+    Args:
+    args: a dictionary that contains problem parameters
+    pretrained_model_dir: a directory that contains pre-trained model parameters
+    model_number: 1 or 2 or 3
+    '''
+    set_number = args["set_number"]
+    dt = args["dt"]
+    datapath = args["datapath"]
+    K = args['K']
+
+    file_types = ['loom_hit', 'loom_nohit']
+    #file_types = ['loom_hit']
+    test_flows = []
+    test_intensities = []
+    test_labels = []
+    test_distances = []
+    for file_type in file_types:
+        # gather testing paths and labels
+        test_path = datapath + 'set_{}/testing/'.format(set_number) + file_type + '/UV_flow_samples/'
+        if os.path.isdir(test_path):
+            test_files = glob.glob(test_path + '*.npy')
+            for test_flow_file in test_files:
+                test_intensity_file = test_flow_file.replace('UV_flow_samples', 'intensities_samples_cg')
+                test_intensity_file = test_intensity_file.replace('UV_flow_sample', 'intensities_sample_cg')
+                test_distance_file = test_flow_file.replace('testing', 'other_info/distances')
+                test_distance_file = test_distance_file.replace('UV_flow_samples/UV_flow_sample', 'distance')
+                test_flow =  np.load(test_flow_file)
+                test_intensity = np.load(test_intensity_file)
+                test_distance = np.load(test_distance_file)
+                test_steps = test_flow.shape[0]
+                if file_type == 'loom_hit':
+                    test_label = np.ones(test_steps)
+                else:
+                    test_label = np.zeros(test_steps)
+                test_flows.append(test_flow)
+                test_intensities.append(test_intensity)
+                test_distances.append(test_distance[-1])
+                test_labels.append(test_label)
+    N_test = len(test_flows)
+
+    UV_flow = tf.compat.v1.placeholder(tf.float32, [None, K*K, 4], name='UV_flow')
+    labels = tf.compat.v1.placeholder(tf.float32, [None], name='labels')
+    intensity = None
+    if args['use_intensity']:
+        intensity = tf.compat.v1.placeholder(tf.float32, 
+            [None, K*K], name='intensity')
+
+    a = np.load(pretrained_model_dir + "trained_a.npy")
+    b = np.load(pretrained_model_dir + "trained_b.npy")
+    intercept_e = np.load(pretrained_model_dir + "trained_intercept_e.npy")
+    tau_1 = np.load(pretrained_model_dir + "trained_tau_1.npy")
+    weights_e = np.load(pretrained_model_dir + "trained_weights_e.npy")
+    #print(a, b, tau_1, intercept_e)
+
+    if args["symmetrize"]:
+        weights_e = weights_e[:, 0]
+    if model_number == 2 or model_number == 3:
+        weights_i = np.load(pretrained_model_dir + "trained_weights_i.npy")
+        if args["symmetrize"]:
+            weights_i = weights_i[:, 0]
+    if model_number == 3:
+        intercept_i = np.load(pretrained_model_dir + "trained_intercept_i.npy")
+        #print(intercept_i)
+    weights_intensity = None
+    if args["use_intensity"]:
+        weights_intensity = np.load(pretrained_model_dir + "trained_weights_intensity.npy")
+
+    if model_number == 1:
+        loss, error_step, error_trajectory, filtered_res, _ = lplc2.loss_error_C_excitatory_only(args, 
+        weights_e, weights_intensity, intercept_e, UV_flow, intensity, 
+        labels, tau_1, a, b)
+    elif model_number == 2:
+        loss, error_step, error_trajectory, filtered_res, _  = lplc2.loss_error_C_inhibitory1(args, 
+            weights_e, weights_i, weights_intensity, intercept_e, UV_flow, 
+            intensity, labels, tau_1, a, b)
+    elif model_number == 3:
+        loss, error_step, error_trajectory, filtered_res, _ = lplc2.loss_error_C_inhibitory2(args, 
+            weights_e, weights_i, weights_intensity, intercept_e, intercept_i, 
+            UV_flow, intensity, labels, tau_1, a, b)
+
+    error_list = []
+    error_loomnohit = []
+    predicted_steps = []
+    distance = []
+    with tf.compat.v1.Session() as sess:
+        for sample_i in range(N_test):
+            if args['use_intensity']:
+                error_i, response_i = sess.run([error_trajectory, filtered_res], 
+                    {UV_flow:test_flows[sample_i], labels:test_labels[sample_i], 
+                    intensity: test_intensities[sample_i]})
+            else:
+                error_i, response_i = sess.run([error_trajectory, filtered_res], 
+                    {UV_flow:test_flows[sample_i], labels:test_labels[sample_i]})
+            if test_labels[sample_i][0] == 1:
+                error_list.append(error_i)
+                distance.append(test_distances[sample_i])
+                logits_i = np.abs(a) * response_i + b
+                predictions_i = np.round(sigmoid_array(logits_i))
+                if np.amax(predictions_i) > 0:
+                    predicted_steps.append(np.argmax(predictions_i) + 1)
+            else:
+                error_loomnohit.append(error_i)
+    print("{}/{} = {} loom_hit samples are predicted wrong".format(sum(error_list), 
+        len(error_list), str(np.mean(error_list))))
+    if len(error_loomnohit) > 0:
+        print("{}/{} = {} loom_nohit samples are predicted wrong".format(sum(error_loomnohit), 
+            len(error_loomnohit), str(np.mean(error_loomnohit))))
+    print("Average time step for escape is " + str(np.around(np.mean(predicted_steps), 3)))
+    with open(pretrained_model_dir + "investigate_output.txt", 'w') as f:
+        f.write("{}/{} = {} loom_hit samples are predicted wrong\n".format(sum(error_list), 
+        len(error_list), str(np.around(np.mean(error_list), 3))))
+        if len(error_loomnohit) > 0:
+            f.write("{}/{} = {} loom_nohit samples are predicted wrong\n".format(sum(error_loomnohit), 
+            len(error_loomnohit), str(np.around(np.mean(error_loomnohit), 3))))
+        f.write("Average time step for escape is " + str(np.around(np.mean(predicted_steps), 3)))
+    correct = ["correct" if error < 0.5 else "incorrect" for error in error_list]
+    fig = plt.figure(figsize=(5, 5))
+    sns.boxplot(x=correct, y=distance).set(ylabel='Distance')
+    fig.savefig(pretrained_model_dir + "distance_error.pdf")
+
+
 def plot_all_hists(arr_list, color_list, legend_list, y_scal, xl, xu, yl, yu):
     fig = plt.figure(figsize=(5, 5))
     for ind, arr in enumerate(arr_list):
@@ -1352,168 +1626,6 @@ def plot_all_hists(arr_list, color_list, legend_list, y_scal, xl, xu, yl, yu):
     plt.show()
     
     return fig
-
-
-def get_hist(arr):
-    arr = arr.flatten()
-    bins = np.int(np.sqrt(arr.shape[0]))
-    bins = np.minimum(bins, 1000)
-    hist, bin_edges = np.histogram(arr, bins, density=True)
-    bin_centers = 0.5*(bin_edges[:-1]+bin_edges[1:])
-    
-    return hist, bin_centers
-
-
-# Plot the filtered responses on given trajectory
-def plot_response_over_time(\
-    args, model_path, model_type, figuretype, res_T_2Fa_max, UV_flow_files, intensity_files, ymin, ymax_dict, filename):
-    '''
-    Args:
-    args: a dictionary that contains problem parameters
-    model_path: a directory that contains pre-trained model parameters
-    model_type: model type
-    UV_flow_files: files that contains UV flow
-    intensity_files: files that contains frame intensities
-    filename: filename to save
-    '''
-    K = args['K']
-    alpha_leak = args['alpha_leak']
-    a = np.load(model_path + "trained_a.npy")
-    b = np.load(model_path + "trained_b.npy")
-    
-    intercept_e = np.load(model_path + "trained_intercept_e.npy")
-    tau_1 = np.load(model_path + "trained_tau_1.npy")
-    weights_e = np.load(model_path + "trained_weights_e.npy")
-#     weights_e = 1./(1.+np.exp(-weights_e))
-    if model_type == 'inhibitory1' or model_type == 'inhibitory2':
-        weights_i = np.load(model_path + "trained_weights_i.npy")
-#         weights_i = 1./(1.+np.exp(-weights_i))
-        intercept_i = np.load(model_path + "trained_intercept_i.npy")
-    weights_intensity = None
-    if args["use_intensity"]:
-        weights_intensity = np.load(model_path + "trained_weights_intensity.npy")
-    if args['temporal_filter']:
-        args['n'] = 1
-    
-    res_max = 0.
-    for ind, UV_flow_file in enumerate(UV_flow_files):
-        UV_flow = np.load(UV_flow_file)
-        intensity = None
-        if args['use_intensity']:
-            intensity = np.load(intensity_files[ind])
-            assert(len(intensity) == len(UV_flow_))
-        if model_type == 'excitatory':
-            res_T = get_response_excitatory_only(\
-                args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
-        elif model_type == 'excitatory_WNR':
-            res_T = get_response_excitatory_only(\
-                args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
-        elif model_type == 'inhibitory1':
-            res_T = get_response_with_inhibition1(\
-                args, weights_e, weights_i, intercept_e, intercept_i, a, b, UV_flow, weights_intensity, intensity)
-        elif model_type == 'inhibitory2':
-            res_rest, res_T, _, _ = get_response_with_inhibition2(\
-                args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity)
-        res_max = np.maximum(res_max, res_T.max())
-        
-    fig = plt.figure(figsize=(1.5*len(UV_flow_files), 1.5))
-    for ind, UV_flow_file in enumerate(UV_flow_files):
-        UV_flow = np.load(UV_flow_file)
-        intensity = None
-        if args['use_intensity']:
-            intensity = np.load(intensity_files[ind])
-            assert(len(intensity) == len(UV_flow_))
-        if model_type == 'excitatory':
-            res_T = get_response_excitatory_only(\
-                args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
-        elif model_type == 'excitatory_WNR':
-            res_T = get_response_excitatory_only(\
-                args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
-        elif model_type == 'inhibitory1':
-            res_T = get_response_with_inhibition1(\
-                args, weights_e, weights_i, intercept_e, intercept_i, a, b, UV_flow, weights_intensity, intensity)
-        elif model_type == 'inhibitory2':
-            res_rest, res_T, _, _ = get_response_with_inhibition2(\
-                args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity)
-        plt.subplot(1, len(UV_flow_files), ind+1)
-        if figuretype == '2F':
-            res_to_tem = res_T-res_T[0]
-            res_to_plot = np.zeros_like(res_to_tem)
-            for t in range(res_to_plot.shape[0]):
-                res_to_plot[t] = general_temp_filter(0, 0.1, 0.01, res_to_tem[:t+1])
-            plt.plot(np.arange(len(res_T)), res_to_plot, c='k', linewidth=1)
-            ymax = res_max-res_T[0]
-        else:
-            res_to_tem = (res_T-res_T[0])/res_T_2Fa_max
-            res_to_plot = np.zeros_like(res_to_tem)
-            for t in range(res_to_plot.shape[0]):
-                res_to_plot[t] = general_temp_filter(0, 0.1, 0.01, res_to_tem[:t+1])
-            plt.plot(np.arange(len(res_T)), res_to_plot, c='k', linewidth=1)
-            ymax = (res_max-res_T[0])/res_T_2Fa_max
-            ymax = ymax_dict[figuretype]
-        plt.ylim([ymin, ymax])
-        plt.xticks([])
-        plt.yticks([])
-        plt.axis('off')
-    fig.savefig(filename, bbox_inches='tight')
-    plt.close()
-    
-    
-# get the filtered responses on given trajectory
-def get_response_over_time(args, model_path, model_type, UV_flow, intensity=0):
-    '''
-    Args:
-    args: a dictionary that contains problem parameters
-    model_path: a directory that contains pre-trained model parameters
-    model_type: model type
-    UV_flow: UV flow
-    intensity: frame intensity
-    
-    Returns:
-    res_T: response
-    '''
-    K = args['K']
-    alpha_leak = args['alpha_leak']
-    intensity = None
-    if args['use_intensity']:
-        intensity = intensity
-        assert(len(intensity) == len(UV_flow_))
-    
-    a = np.load(model_path + "trained_a.npy")
-    b = np.load(model_path + "trained_b.npy")
-    
-    intercept_e = np.load(model_path + "trained_intercept_e.npy")
-    tau_1 = np.load(model_path + "trained_tau_1.npy")
-    weights_e = np.load(model_path + "trained_weights_e.npy")
-    if model_type == 'inhibitory1' or model_type == 'inhibitory2':
-        weights_i = np.load(model_path + "trained_weights_i.npy")
-        intercept_i = np.load(model_path + "trained_intercept_i.npy")
-        
-    
-    weights_intensity = None
-    if args["use_intensity"]:
-        weights_intensity = np.load(model_path + "trained_weights_intensity.npy")
-    if args['temporal_filter']:
-        args['n'] = 1
-    if model_type == 'excitatory':
-        res_T = get_response_excitatory_only(\
-            args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
-    elif model_type == 'excitatory_WNR':
-        res_T = get_response_excitatory_only(\
-            args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, intensity)
-    elif model_type == 'inhibitory1':
-        res_T = get_response_with_inhibition1(\
-            args, weights_e, weights_i, intercept_e, intercept_i, a, b, UV_flow, weights_intensity, intensity)
-    elif model_type == 'inhibitory2':
-        res_rest, res_T, _, _, _ = get_response_with_inhibition2(\
-            args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity)
-    
-    res_TM = res_T.sum(axis=1)
-    res_rest_M = res_rest.sum()
-    prob = sigmoid_array(np.abs(a)*res_TM+b)
-    prob_rest = sigmoid_array(np.abs(a)*res_rest_M+b)
-    
-    return res_rest, res_T, prob, prob_rest
 
 
 def get_sparsity(M, res_T_all, res_rest, data_type_ind):
@@ -1544,417 +1656,7 @@ def get_sparsity(M, res_T_all, res_rest, data_type_ind):
     
     return active_unit
 
-    
-# Plot the trajectories in 3d
-def plot_trajectories(data_path, data_types, colors, filename):
-    fig = plt.figure(figsize=(5*len(data_types), 5))
-    for ind1, data_type in enumerate(data_types):
-        if data_type != 'rotation':
-            ax = fig.add_subplot(1, len(data_types), 1+ind1, projection='3d')
-            path = data_path+data_type+'/trajectories/'
-            files = glob.glob(path+'*.npy')
-            for ind2, file in enumerate(files):
-                if ind2%1 == 0:
-                    rn_arrs = np.load(file, allow_pickle=True)
-                    for rn_arr in rn_arrs:
-                        rn_arr = np.array(rn_arr)
-                        P = rn_arr.shape[1]
-                        for p in range(P):
-                            ax.plot(rn_arr[:, p, 0], rn_arr[:, p, 1], rn_arr[:, p, 2], c=colors[0], linewidth=1) 
-            for ind2, file in enumerate(files):
-                if ind2%1 == 0:
-                    rn_arrs = np.load(file, allow_pickle=True)
-                    for rn_arr in rn_arrs:
-                        rn_arr = np.array(rn_arr)
-                        P = rn_arr.shape[1]
-                        for p in range(P):
-                            ax.plot(rn_arr[0:1, p, 0], rn_arr[0:1, p, 1], rn_arr[0:1, p, 2], 'k.')
-            ax.plot([0], [0], [0], 'r.')    
-            ax.set_title(data_type)
-            ax.set_xlabel('x')
-            ax.set_ylabel('y')
-            ax.set_zlabel('z')
-        elif data_type == 'rotation':
-            ax = fig.add_subplot(1, len(data_types), 1+ind1, projection='3d')
-            path = data_path+data_type+'/trajectories/'
-            files = glob.glob(path+'*.npy')
-            rn_arrs = np.load(files[3], allow_pickle=True)
-            rn_arr = np.array(rn_arrs[9])
-            P = rn_arr.shape[1]
-            for p in range(P):
-                if p%1 == 0:
-                    ax.plot(rn_arr[:, p, 0], rn_arr[:, p, 1], rn_arr[:, p, 2], c=colors[1], linewidth=1)
-                    ax.plot(rn_arr[0:1, p, 0], rn_arr[0:1, p, 1], rn_arr[0:1, p, 2], 'k.') 
-            ax.plot([0], [0], [0], 'r.')    
-            ax.set_title(data_type)
-            ax.set_xlabel('x')
-            ax.set_ylabel('y')
-            ax.set_zlabel('z')
-    fig.savefig(filename, bbox_inches='tight')
-    plt.show()
-    
-    
-# Plot the distances
-def plot_distances(data_path, data_types, colors, filename):
-    fig = plt.figure(figsize=(4*len(data_types), 4))
-    for ind1, data_type in enumerate(data_types):
-        if data_type != 'rotation':
-            T = 0
-            ax = fig.add_subplot(1, len(data_types), 1+ind1)
-            path = data_path+data_type+'/distances/full/'
-            files = glob.glob(path+'*.npy')
-            for ind2, file in enumerate(files):
-                if ind2%10 == 0:
-                    rn_arrs = np.load(file, allow_pickle=True)
-                    for rn_arr in rn_arrs:
-                        rn_arr = np.array(rn_arr)
-                        ax.plot(rn_arr, c=colors[0], linewidth=0.5)
-                        T = np.maximum(T, len(rn_arr))
-            path = data_path+data_type+'/distances/full/'
-            files = glob.glob(path+'*.npy')
-            for ind3, file in enumerate(files):
-                if ind3%10 == 0:
-                    rn_arrs = np.load(file, allow_pickle=True)
-                    for rn_arr in rn_arrs:
-                        rn_arr = np.array(rn_arr)
-                        ax.plot(rn_arr, c=colors[1], linewidth=0.5)
-            ax.plot(np.arange(T), np.ones(T), c='k', linewidth=0.5)
-            ax.set_title(data_type)
-            ax.set_xlabel('time step')
-            ax.set_ylabel('distance')
-        elif data_type == 'rotation':
-            ax = fig.add_subplot(1, len(data_types), 1+ind1)
-            path = data_path+data_type+'/trajectories/'
-            files = glob.glob(path+'*.npy')
-            rn_arrs = np.load(files[3], allow_pickle=True)
-            rn_arr = np.array(rn_arrs[9])
-            T = rn_arr.shape[0]
-            P = rn_arr.shape[1]
-            for p in range(P):
-                if p%1 == 0:
-                    ci = rn_arr[0][p]
-                    Di = dn3d.get_radial_distance(ci[0], ci[1], ci[2])
-                    cf = rn_arr[-1][p]
-                    Df = dn3d.get_radial_distance(cf[0], cf[1], cf[2])
-                ax.plot([0, T], [Di, Df], c=colors[1], linewidth=0.5)
-            ax.plot(np.arange(T), np.ones(T), c='k', linewidth=0.5)
-            ax.set_title(data_type)
-            ax.set_xlabel('time step')
-            ax.set_ylabel('distance')
-            
-    fig.savefig(filename, bbox_inches='tight')
-    plt.show()
-    
-    
-# output to a LPLC2 neuron at a specific time point with excitatory neurons only
-def get_output_excitatory_only(weights_e, intercept_e, UV_flow_t, alpha_leak, weights_intensity=0, intensity_t=0):
-    '''
-    Args:
-    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    intercept_e: intercept in the activation function
-    UV_flow_t: flow field at time point t
-    alpha_leak: slope for leaky relu
-    
-    Returns:
-    output_t: output to a LPLC2 neuron at a specific time point t
-    '''
-    M = len(UV_flow_t)
-    output_t = intercept_e*np.ones(M)
-    for m in range(M):
-        if weights_intensity:
-            if intensity_t[m].shape[0] > 1:
-                output_t[m] = output_t[m] + np.dot(intensity_t[m][:], weights_intensity[:])
-            else:
-                output_t[m] = output_t[m] + 0
-        # input
-        for i in range(4):
-            if UV_flow_t[m].shape[0] > 1:
-                output_t[m] = output_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
-            else:
-                output_t[m] = output_t[m] + 0
-        # relu
-        output_t[m] = get_leaky_relu(alpha_leak, output_t[m])
-    
-    return output_t
 
-
-# response of a LPLC2 neuron
-def get_response_excitatory_only(args, weights_e, intercept_e, a, b, UV_flow, weights_intensity=0, intensity=0):
-    '''
-    Args:
-    args: other arguments
-    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    intercept_e: intercept in the activation function
-    a: coefficient
-    b: intercept
-    UV_flow: flow field
-    alpha_leak: slope for leaky relu
-    
-    Returns:
-    res_T: response of a LPLC2 neuron
-    '''
-    n = args['n']
-    tau_1 = args['tau_1']
-    dt = args['dt']
-    alpha_leak = args['alpha_leak']
-    T = len(UV_flow)
-    M = len(UV_flow[0])
-    output_t = np.zeros((T, M))
-    res_T = np.zeros((T, M))
-    if weights_intensity:
-        for t in range(T):
-            output_t = get_output_excitatory_only(\
-                weights_e, intercept_e, UV_flow[t], alpha_leak, weights_intensity, intensity[t])
-            output_t[t, :] = output_t[:]
-            res_T[t, :] = general_temp_filter(n, tau_1, dt, output_t[:t+1, :])
-    else:
-        for t in range(T):
-            output_t = get_output_excitatory_only(\
-                weights_e, intercept_e, UV_flow[t], alpha_leak)
-            output_t[t] = output_t[:]
-            res_T[t, :] = general_temp_filter(n, tau_1, dt, output_t[:t+1, :])
-    
-    return a*res_T+b
-
-
-# output to a LPLC2 neuron at a specific time point with both excitatory and inhibitory neurons 
-def get_output_with_inhibition1(weights_e, weights_i, intercept_e, intercept_i, UV_flow_t, alpha_leak, \
-                               weights_intensity=0, intensity_t=0):
-    '''
-    Args:
-    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    weights_i: weights for inhibitory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    intercept_e: intercept in the activation function for LPLC2 neuron
-    intercept_i: intercept in the activation function for inhibitory neurons
-    UV_flow_t: flow field at time point t
-    alpha_leak: slope for leaky relu
-    
-    Returns:
-    output_t: output to a LPLC2 neuron at a specific time point t
-    '''
-    M = len(UV_flow_t)
-    output_t = intercept_e*np.ones(M)
-    output_t_i = intercept_i*np.ones(M)
-    for m in range(M):
-        if weights_intensity:
-            if intensity_t[m].shape[0] > 1:
-                output_t[m] = output_t[m] + np.dot(intensity_t[m][:], weights_intensity[:])
-            else:
-                output_t[m] = output_t[m] + 0
-        # excitatory input
-        for i in range(4):
-            if UV_flow_t[m].shape[0] > 1:
-                output_t[m] = output_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
-            else:
-                output_t[m] = output_t[m] + 0
-        # inhibitory input
-        for i in range(4):
-            if UV_flow_t[m].shape[0] > 1:
-                output_t_i[m] = output_t_i[m] + np.dot(UV_flow_t[m][:, i], weights_i[:, i])
-            else:
-                output_t_i[m] = output_t_i[m] + 0
-        output_t_i[m] = get_leaky_relu(alpha_leak, output_t_i[m])
-        # total input
-        output_t[m] = output_t[m] - output_t_i[m]
-        # relu
-        output_t[m] = get_leaky_relu(alpha_leak, output_t[m])
-    
-    return output_t
-
-
-# response of a LPLC2 neuron
-def get_response_with_inhibition1(\
-    args, weights_e, weights_i, intercept_e, intercept_i, a, b, UV_flow, weights_intensity=0, intensity=0):
-    '''
-    Args:
-    args: other arguments
-    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    weights_i: weights for inhibitory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    intercept_e: intercept in the activation function for LPLC2 neuron
-    intercept_i: intercept in the activation function for inhibitory neurons
-    a: coefficient
-    b: intercept
-    UV_flow: flow field
-    alpha_leak: slope for leaky relu
-    
-    Returns:
-    res_T: response of a LPLC2 neuron
-    '''
-    n = args['n']
-    tau_1 = args['tau_1']
-    dt = args['dt']
-    alpha_leak = args['alpha_leak']
-    T = len(UV_flow)
-    M = len(UV_flow[0])
-    output_t = np.zeros((T, M))
-    res_T = np.zeros((T, M))
-    if weights_intensity:
-        for t in range(T):
-            output_t = get_output_with_inhibition1(\
-                weights_e, weights_i, intercept_e, intercept_i, UV_flow[t], alpha_leak, weights_intensity, intensity_[t])
-            output_t[t, :] = output_t[:]
-            res_T[t, :] = general_temp_filter(n, tau_1, dt, output_t[:t+1, :])
-    else:
-        for t in range(T):
-            output_t = get_output_with_inhibition1(\
-                weights_e, weights_i, intercept_e, intercept_i, UV_flow[t], alpha_leak)
-            output_t[t, :] = output_t[:]
-            res_T[t, :] = general_temp_filter(n, tau_1, dt, output_t[:t+1, :])
-    
-    return a*res_T+b
-
-
-# output to a LPLC2 neuron at a specific time point with both excitatory and inhibitory neurons 
-def get_output_with_inhibition2(weights_e, weights_i, intercept_e, intercept_i, UV_flow_t, alpha_leak, \
-                               weights_intensity=0, intensity_t=0):
-    '''
-    Args:
-    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    weights_i: weights for inhibitory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    intercept_e: intercept in the activation function for the LPLC2 neuron
-    intercept_i: intercept in the activation function for inhibitory neurons
-    UV_flow_t: flow field at time point t
-    alpha_leak: slope for leaky relu
-    
-    Returns:
-    output_t: output of a LPLC2 neuron at a specific time point t
-    Ie_t: excitatory component without thresholding
-    Ii_t: inhibitory component with thresholding
-    Ii_t2: inhibitory component without thresholding
-    '''
-    M = len(UV_flow_t)
-    output_t = intercept_e*np.ones(M)
-    Ie_t = np.zeros(M)
-    Ii_t = np.zeros(M)
-    Ii_t2 = np.zeros(M)
-    for m in range(M):
-        if weights_intensity:
-            if intensity_t[m].shape[0] > 1:
-                output_t[m] = output_t[m] + np.dot(intensity_t[m][:], weights_intensity[:])
-            else:
-                output_t[m] = output_t[m] + 0
-        # excitory input
-        for i in range(4):
-            if UV_flow_t[m].shape[0] > 1:
-                output_t[m] = output_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
-                Ie_t[m] = Ie_t[m] + np.dot(UV_flow_t[m][:, i], weights_e[:, i])
-            else:
-                output_t[m] = output_t[m] + 0
-                Ie_t[m] = Ie_t[m] + 0
-        # inhibitory input
-        if UV_flow_t[m].shape[0] > 1:
-            h1 = intercept_i + np.dot(UV_flow_t[m][:, 0], weights_i[:, 0])
-            h2 = intercept_i + np.dot(UV_flow_t[m][:, 1], weights_i[:, 1])
-            h3 = intercept_i + np.dot(UV_flow_t[m][:, 2], weights_i[:, 2])
-            h4 = intercept_i + np.dot(UV_flow_t[m][:, 3], weights_i[:, 3]) 
-        else:
-            h1 = intercept_i + 0
-            h2 = intercept_i + 0
-            h3 = intercept_i + 0
-            h4 = intercept_i + 0
-        # relu
-        h12 = get_leaky_relu(alpha_leak, h1-intercept_i)
-        h22 = get_leaky_relu(alpha_leak, h2-intercept_i)
-        h32 = get_leaky_relu(alpha_leak, h3-intercept_i)
-        h42 = get_leaky_relu(alpha_leak, h4-intercept_i)
-        Ii_t2[m] = h12+h22+h32+h42
-        
-        h1 = get_leaky_relu(alpha_leak, h1)
-        h2 = get_leaky_relu(alpha_leak, h2)
-        h3 = get_leaky_relu(alpha_leak, h3)
-        h4 = get_leaky_relu(alpha_leak, h4)
-        Ii_t[m] = h1+h2+h3+h4
-        output_t[m] = output_t[m] - (h1+h2+h3+h4)
-        # relu
-        output_t[m] = get_leaky_relu(alpha_leak, output_t[m])
-    
-    return output_t, Ie_t, Ii_t, Ii_t2
-
-
-# response of a LPLC2 neuron
-def get_response_with_inhibition2(\
-    args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity=0, intensity=0):
-    '''
-    Args:
-    args: other arguments
-    weights_e: weights for excitatory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    weights_i: weights for inhibitory neurons, K*K by 4, for axis=1, 0:right motion, 1:left motion, 2:up motion, 3:down motion
-    intercept_e: intercept in the activation function for LPLC2 neuron
-    UV_flow: flow field
-    alpha_leak: slope for leaky relu
-    
-    Returns:
-    res_rest: baseline response when there is no stimuli
-    res_T: response of a LPLC2 neuron
-    Ie_T: excitatory component without thresholding
-    Ii_T: inhibitory component with thresholding
-    Ii_T2: inhibitory component without thresholding
-    '''
-    n = args['n']
-    tau_1 = args['tau_1']
-    dt = args['dt']
-    alpha_leak = args['alpha_leak']
-    T = len(UV_flow)
-    M = len(UV_flow[0])
-    res_T = np.zeros((T, M))
-    Ie_T = np.zeros((T, M))
-    Ii_T = np.zeros((T, M))
-    Ii_T2 = np.zeros((T, M))
-    UV_flow_0 = np.zeros((M, 1))
-    if weights_intensity:
-        res_rest, _, _, _ = get_output_with_inhibition2(\
-            weights_e, weights_i, intercept_e, intercept_i, UV_flow_0, alpha_leak, weights_intensity, intensity_[t])
-        for t in range(T):
-            output_t, Ie_t, Ii_t, Ii_t2 = get_output_with_inhibition2(\
-                weights_e, weights_i, intercept_e, intercept_i, UV_flow[t], alpha_leak, weights_intensity, intensity_[t])
-            res_T[t, :] = output_t[:]
-            Ie_T[t, :] = Ie_t[:]
-            Ii_T[t, :] = Ii_t[:]
-            Ii_T2[t, :] = Ii_t2[:]
-    else:
-        res_rest, _, _, _ = get_output_with_inhibition2(\
-                weights_e, weights_i, intercept_e, intercept_i, UV_flow_0, alpha_leak)
-        for t in range(T):
-            output_t, Ie_t, Ii_t, Ii_t2 = get_output_with_inhibition2(\
-                weights_e, weights_i, intercept_e, intercept_i, UV_flow[t], alpha_leak)
-            res_T[t, :] = output_t[:]
-            Ie_T[t, :] = Ie_t[:]
-            Ii_T[t, :] = Ii_t[:]
-            Ii_T2[t, :] = Ii_t2[:]
-    
-    return res_rest, res_T, Ie_T, Ii_T, Ii_T2
-
-
-# general temporal filter
-def general_temp_filter(n, tau_1, dt, signal_seq):
-    '''
-    Args:
-    n: filter order, 0 means no filter
-    tau_1: timescale of the filter (sec)
-    dt: simulation time step (sec)
-    signal_seq: signal sequence to be filtered
-    
-    Returns:
-    filtered_sig: filtered signal, single data point
-    '''
-    if n == 0:
-        return signal_seq[-1, :]
-    elif n == 1:
-        T = signal_seq.shape[0]
-        ts = dt*np.arange(T)
-        G_n = (1./tau_1)*np.exp(-ts/tau_1)
-        G_n = G_n/G_n.sum()
-        filtered_sig = np.dot(np.flip(G_n), signal_seq)
-        return filtered_sig
-    else:
-        T = signal_seq.shape[0]
-        ts = dt*np.arange(T)
-        G_n = (1./np.math.factorial(n-1))*(ts**(n-1)/(tau_1**n))*np.exp(-ts/tau_1)
-        G_n = G_n/G_n.sum()
-        filtered_sig = np.dot(np.flip(G_n), signal_seq)
-        return filtered_sig
-    
-    
 def get_angle_matrix_lplc2(M):
     angle_matrix = np.zeros((M, M))
     _, lplc2_units_coords = opsg.get_lplc2_units(M)
@@ -2427,284 +2129,9 @@ def get_loss_for_training(inputs, args, X, y, regu_l2):
     return loss
 
 
-# get the velocity 
-def get_velocity_train_test(data_path, data_types, save_path=None):
-    '''
-    Args:
-    data_path: path where the data is saved.
-    data_types: data types
-    '''
-    LL = len(data_types)
-    N_train = np.zeros(LL)
-    N_test = np.zeros(LL)
-    X_training = []
-    y_training = []
-    for data_type in data_types:
-        path = data_path+'training/'+data_type+'/UV_flow_samples/'
-        if os.path.isdir(path):
-            files = glob.glob(path+'*.npy')
-            for index in np.arange(len(files)):
-                rn_arrs = np.load(files[index], allow_pickle=True)
-                for rn_arr in rn_arrs:
-                    steps = len(rn_arr)
-                    if steps > 0:
-                        if data_type == 'hit':
-                            N_train[0] = N_train[0]+1
-                        elif data_type == 'miss':
-                            N_train[1] = N_train[1]+1
-                        elif data_type == 'retreat':
-                            N_train[2] = N_train[2]+1
-                        elif data_type == 'rotation':
-                            N_train[3] = N_train[3]+1
-                        M = len(rn_arr[0])
-                        XM = np.zeros(M)
-                        for m in range(M):
-                            vm = 0
-                            for step in range(steps):
-                                vm = np.maximum(vm, rn_arr[step][m].max())
-                            XM[m] = vm
-                        X_training.append(XM)
-                        if data_type == 'hit':
-                            y_training.append([1])
-                        else:
-                            y_training.append([0])
-                    else:
-                        print('Empty array!')
-    X_testing = []
-    y_testing = []
-    for data_type in data_types:
-        path = data_path+'testing/'+data_type+'/UV_flow_samples/'
-        if os.path.isdir(path):
-            files = glob.glob(path+'*.npy')
-            for index in np.arange(len(files)):
-                rn_arrs = np.load(files[index], allow_pickle=True)
-                for rn_arr in rn_arrs:
-                    if data_type == 'hit':
-                        N_test[0] = N_test[0]+1
-                    elif data_type == 'miss':
-                        N_test[1] = N_test[1]+1
-                    elif data_type == 'retreat':
-                        N_test[2] = N_test[2]+1
-                    elif data_type == 'rotation':
-                        N_test[3] = N_test[3]+1
-                    steps = len(rn_arr)
-                    M = len(rn_arr[0])
-                    XM = np.zeros(M)
-                    for m in range(M):
-                        vm = 0
-                        for step in range(steps):
-                            vm = np.maximum(vm, rn_arr[step][m].max())
-                        XM[m] = vm
-                    X_testing.append(XM)
-                    if data_type == 'hit':
-                        y_testing.append([1])
-                    else:
-                        y_testing.append([0])
-    X_training = np.array(X_training, np.float32)
-    y_training = np.array(y_training, np.float32)
-    X_testing = np.array(X_testing, np.float32)
-    y_testing = np.array(y_testing, np.float32)
-    if save_path:
-        np.savez(save_path, N_train, N_test, X_training, y_training, X_testing, y_testing)
-        
-    return N_train.astype(np.int), N_test.astype(np.int), X_training, y_training, X_testing, y_testing
-
-
-# get the velocity design matrix
-def get_velocity_nonzero(data_path, data_types):
-    '''
-    Args:
-    data_path: path where the data is saved.
-    data_types: data types
-    '''
-    V_hit = []
-    V_miss = []
-    V_retreat = []
-    V_rotation = []
-    for data_type in data_types:
-        path = data_path+'training/'+data_type+'/UV_flow_samples/'
-        if os.path.isdir(path):
-            files = glob.glob(path+'*.npy')
-            for index in np.arange(len(files)):
-                rn_arrs = np.load(files[index], allow_pickle=True)
-                for rn_arr in rn_arrs:
-                    steps = len(rn_arr)
-                    M = len(rn_arr[0])
-                    for m in range(M):
-                        for step in range(steps):
-                            if rn_arr[step][m].shape[0] > 1:
-                                if data_type == 'hit':
-                                    r_to_append = rn_arr[step][m].flatten()
-                                    V_hit.extend(r_to_append[r_to_append>0])
-                                elif data_type == 'miss':
-                                    r_to_append = rn_arr[step][m].flatten()
-                                    V_miss.extend(r_to_append[r_to_append>0])
-                                elif data_type == 'retreat':
-                                    r_to_append = rn_arr[step][m].flatten()
-                                    V_retreat.extend(r_to_append[r_to_append>0])
-                                elif data_type == 'rotation':
-                                    r_to_append = rn_arr[step][m].flatten()
-                                    V_rotation.extend(r_to_append[r_to_append>0])
-    
-    return np.array(V_hit).flatten(), np.array(V_miss).flatten(), np.array(V_retreat).flatten(), np.array(V_rotation).flatten()
-
-
-def display_weights(\
-    K, trained_weights_e_all, trained_weights_i_all, has_inhibition, sample_list, n_sample, mask_d, colormap_e, colormap_i):
-    fig = plt.figure(figsize=(2*n_sample*0.8, 0.8))
-    for ind, label in enumerate(sample_list):
-        trained_weights_e = trained_weights_e_all[label, :].reshape((K, K))
-        trained_weights_e[mask_d] = 0.
-        extreme_e = np.amax(np.abs(trained_weights_e))
-        if has_inhibition:
-            color_norm_e = mpl.colors.Normalize(vmin=0, vmax=extreme_e)
-        else:
-            color_norm_e = mpl.colors.Normalize(vmin=-extreme_e, vmax=extreme_e)
-        plt.subplot(1, 2*n_sample, ind+1)
-        plt.imshow(trained_weights_e, norm=color_norm_e, cmap=colormap_e)
-        plt.xticks([])
-        plt.yticks([])
-        plt.colorbar(orientation='horizontal', fraction=.03)
-        if has_inhibition:
-            trained_weights_i = trained_weights_i_all[label, :].reshape((K, K))
-            trained_weights_i[mask_d] = 0.
-            extreme_i = np.amax(np.abs(trained_weights_i))
-            color_norm_i = mpl.colors.Normalize(vmin=0, vmax=extreme_i)
-            plt.subplot(1, 2*n_sample, ind+1+len(sample_list))
-            plt.imshow(trained_weights_i, norm=color_norm_i, cmap=colormap_i)
-            plt.xticks([])
-            plt.yticks([])
-            plt.colorbar(orientation='horizontal', fraction=.03)
-    plt.show()
-    
-    return fig
-
-
-def display_weights2(K, input_weights, mask_d, colormap, M):
-    N = input_weights.shape[0]
-    fig = plt.figure(figsize=(M*4, 4))
-    
-    weights_matrix = input_weights[0, :].reshape((K, K))
-    weights_matrix[mask_d] = 0.
-    extreme = np.amax(np.abs(input_weights))
-    color_norm = mpl.colors.Normalize(vmin=-extreme, vmax=extreme)
-    plt.subplot(1, M, 1)
-    plt.imshow(weights_matrix, norm=color_norm, cmap=colormap)
-    plt.colorbar()
-    
-    for m in range(1, M-1):
-        weights_matrix = input_weights[m*np.int((N-2)/(M-2)), :].reshape((K, K))
-        weights_matrix[mask_d] = 0.
-        color_norm = mpl.colors.Normalize(vmin=-extreme, vmax=extreme)
-        plt.subplot(1, M, m+1)
-        plt.imshow(weights_matrix, norm=color_norm, cmap=colormap)
-        plt.colorbar()
-        
-    weights_matrix = input_weights[-1, :].reshape((K, K))
-    weights_matrix[mask_d] = 0.
-    color_norm = mpl.colors.Normalize(vmin=-extreme, vmax=extreme)
-    plt.subplot(1, M, M)
-    plt.imshow(weights_matrix, norm=color_norm, cmap=colormap)
-    plt.colorbar()
-    plt.show()
-    
-    return fig
-    
-    
-# leaky relu
-def get_leaky_relu(alpha_leak, x):
-    if x >= 0:
-        return x
-    else:
-        return alpha_leak*x
-    
-
-def sigmoid_array(x): 
-    return 1 / (1 + np.exp(-x))
-
-
-def plot_KLapoetke_intensities_extended(intensities, dt, savepath, name):
-    intensities = np.squeeze(intensities)
-    steps = intensities.shape[0]
-    combined_movies_list = []
-    for step in range(steps):
-        save_intensity(intensities[step], step, savepath+name)
-        combined_movies = imageio.imread(savepath+name+'_{}.png'.format(step+1))
-        combined_movies_list.append(combined_movies)
-    movie_name = savepath+name+'.mp4'
-    imageio.mimsave(movie_name, combined_movies_list, fps = np.int(1/dt))
-
-    
-def save_intensity(intensity, step, save_name):
-    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-    ax.imshow(intensity, cmap='gray_r', vmin=0, vmax=1)
-#         ax.vlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
-#         ax.hlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
-    fig.savefig(save_name+'_{}.png'.format(step+1))
-    plt.close(fig)
-    
-    
-def plot_KLapoetke_UV_flows(UV_flow, K, L, pad, dt, savepath, name):
-    leftup_corners = opsg.get_leftup_corners(K, L, pad)
-    steps = UV_flow.shape[0]
-    combined_movies_u_list = []
-    combined_movies_v_list = []
-    for step in range(steps):
-        cf_u, cf_v = flfd.set_flow_fields_on_frame(UV_flow[step], leftup_corners, K, L, pad)
-        u_flow = cf_u[0, :, :]
-        v_flow = cf_v[0, :, :]
-        save_uv_flow(u_flow, step, savepath+name+'_u')
-        save_uv_flow(v_flow, step, savepath+name+'_v')
-        combined_movies_u = imageio.imread(savepath+name+'_u_{}.png'.format(step+1))
-        combined_movies_u_list.append(combined_movies_u)
-        combined_movies_v = imageio.imread(savepath+name+'_v_{}.png'.format(step+1))
-        combined_movies_v_list.append(combined_movies_v)
-    movie_name_u = savepath+name+'_u.mp4'
-    imageio.mimsave(movie_name_u, combined_movies_u_list, fps = np.int(1/dt))
-    movie_name_v = savepath+name+'_v.mp4'
-    imageio.mimsave(movie_name_v, combined_movies_v_list, fps = np.int(1/dt))
-        
-        
-def save_uv_flow(flow, step, save_name):
-    myheat = LinearSegmentedColormap.from_list('br', ["b", "w", "r"], N=256)
-    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-    vmin=np.min(flow.flatten())
-    vmax=np.max(flow.flatten())
-    vmax = np.max([-vmin, vmax])
-    if vmax < 1e-6:
-        vmax = 1
-    vmax = 0.08
-    ax.imshow(flow, cmap=myheat, vmin=-vmax, vmax=vmax)
-    PCM=ax.get_children()[9] #get the mappable, the 1st and the 2nd are the x and y axes
-    plt.colorbar(PCM, ax=ax)
-#     ax.vlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
-#     ax.hlines(np.arange(-0.55, N, step=N/K), -0.55, N-0.45, color='salmon', linewidth=.5)
-    fig.savefig(save_name+'_{}.png'.format(step+1))
-    plt.close(fig)
-    
-    
-def plot_UV_flow_tem(UV_flow, p, image_name_u, image_name_v, movie_name_u, movie_name_v, fps, leftup_corners, K, L, pad, vmax=0.08):
-    steps = UV_flow.shape[0]
-    combined_movies_u_list = []
-    combined_movies_v_list = []
-    for step in range(steps):
-        if step%p == 0:
-            cf_u, cf_v = flfd.set_flow_fields_on_frame2(UV_flow[step, :, :, :], leftup_corners, K, L, pad)
-            u_flow = cf_u[0, :, :]
-            v_flow = cf_v[0, :, :]
-            gKse.save_uv_flow(u_flow, step, image_name_u, vmax)
-            gKse.save_uv_flow(v_flow, step, image_name_v, vmax)
-            combined_movies_u = imageio.imread(image_name_u+'_{}.png'.format(step+1))
-            combined_movies_u_list.append(combined_movies_u)
-            combined_movies_v = imageio.imread(image_name_v+'_{}.png'.format(step+1))
-            combined_movies_v_list.append(combined_movies_v)
-    imageio.mimsave(movie_name_u, combined_movies_u_list, fps = fps)
-    imageio.mimsave(movie_name_v, combined_movies_v_list, fps = fps)
-    
-
-###############################
-### multi-unit illustration ###
-###############################
+##########################################################
+####### multi-unit map projection and illustration #######
+##########################################################
 
 def get_normalized_vector(vec):
     norm = np.linalg.norm(vec)
@@ -2985,9 +2412,402 @@ def get_response_on_map(M, N, res_T, t, res_m=1):
     plt.show()
     
     
-#############################
-### Calculate the Hessian ###
-#############################
+####################################################
+####### Prepare training and testing dataset #######
+####################################################
+
+# generate file paths for train and test data
+def generate_train_test_file_paths(args):
+    '''
+    Args:
+    args: a dictionary that contains problem parameters
+
+    Returns:
+    train_flow_files: list of files for UV flows from for training
+    train_intensity_files: list of files for frame intensities for training
+    train_labels: list of labels (probability of hit, either 0 or 1) for training
+    test_flow_files: list of files for UV flows from for testing
+    test_intensity_files: list of files for frame intensities for testing
+    test_labels: list of labels (probability of hit, either 0 or 1) for testing
+    '''
+    start = time.time()
+    print('Generating train and test file paths')
+
+    set_number = args['set_number']
+    data_path = args['data_path']
+
+    file_types = ['hit', 'miss', 'retreat', 'rotation']
+    
+    train_flow_files = []
+    train_intensity_files = []
+    train_distances = []
+    train_labels = []
+    test_flow_files = []
+    test_intensity_files = []
+    test_distances = []
+    test_labels = []
+    rotational_train_flow_files = []
+    rotational_train_intensity_files = []
+    rotational_train_distances = []
+    rotational_train_labels = []
+    rotational_test_flow_files = []
+    rotational_test_intensity_files = []
+    rotational_test_distances = []
+    rotational_test_labels = []
+    for file_type in file_types:
+        # gather training paths and labels
+        train_path = data_path + 'set_{}/training/'.format(set_number) + \
+        file_type + '/UV_flow_samples/'
+        if os.path.isdir(train_path):
+            train_files = glob.glob(train_path + '*.npy')
+            for train_flow_file in train_files:
+                train_intensity_file = train_flow_file.replace('UV_flow_samples', 
+                    'intensities_samples_cg')
+                train_intensity_file = train_intensity_file.replace('UV_flow_sample', 
+                    'intensities_sample_cg')
+                train_distance_file = train_flow_file.replace('training', 
+                    'other_info')
+                train_distance_file = train_distance_file.replace('UV_flow_samples', 
+                    'distances')
+                train_distance_file = train_distance_file.replace('UV_flow_sample', 
+                    'distance')
+                train_flow =  np.load(train_flow_file, allow_pickle=True)
+                train_steps = train_flow.shape[0]
+                if file_type == 'hit':
+                    train_label = np.ones(10)
+                else:
+                    train_label = np.zeros(10)
+                if file_type == 'rotation':
+                    rotational_train_flow_files.append(train_flow_file)
+                    rotational_train_intensity_files.append(train_intensity_file)
+                    rotational_train_labels.append(train_label)
+                    rotational_train_distances.append(np.ones(train_steps))
+                else:
+                    train_flow_files.append(train_flow_file)
+                    train_intensity_files.append(train_intensity_file)
+                    train_labels.append(train_label)
+                    distances = np.load(train_distance_file, allow_pickle=True)
+                    distances_inverse = [1/item for sublist in distances for item in sublist]
+                    train_distances.append(np.asarray(distances_inverse))
+
+        # gather testing paths and labels
+        test_path = data_path + 'set_{}/testing/'.format(set_number) + \
+        file_type + '/UV_flow_samples/'
+        if os.path.isdir(test_path):
+            test_files = glob.glob(test_path + '*.npy')
+            for test_flow_file in test_files:
+                test_intensity_file = test_flow_file.replace('UV_flow_samples', 
+                    'intensities_samples_cg')
+                test_intensity_file = test_intensity_file.replace('UV_flow_sample', 
+                    'intensities_sample_cg')
+                test_distance_file = test_flow_file.replace('testing', 
+                    'other_info')
+                test_distance_file = test_distance_file.replace('UV_flow_samples', 
+                    'distances')
+                test_distance_file = test_distance_file.replace('UV_flow_sample', 
+                    'distance')
+                
+                test_flow =  np.load(test_flow_file, allow_pickle=True)
+                if file_type == 'hit':
+                    test_label = np.ones(10)
+                else:
+                    test_label = np.zeros(10)
+                if file_type == 'rotation':
+                    rotational_test_flow_files.append(test_flow_file)
+                    rotational_test_intensity_files.append(test_intensity_file)
+                    rotational_test_labels.append(test_label)
+                    rotational_test_distances.append(np.array([1]))
+                else:
+                    test_flow_files.append(test_flow_file)
+                    test_intensity_files.append(test_intensity_file)
+                    test_labels.append(test_label)
+                    distances = np.load(test_distance_file, allow_pickle=True)
+                    distances_inverse = [1/item for sublist in distances for item in sublist]
+                    test_distances.append(np.asarray(distances_inverse))
+    # subsample rotational files
+    rotational_train_index = random.sample(range(len(rotational_train_labels)), 
+        int(args['rotational_fraction']*len(rotational_train_labels)))
+    for index in rotational_train_index:
+        train_flow_files.append(rotational_train_flow_files[index])
+        train_intensity_files.append(rotational_train_intensity_files[index])
+        train_labels.append(rotational_train_labels[index])
+        train_distances.append(rotational_train_distances[index])
+
+    rotational_test_index = random.sample(range(len(rotational_test_labels)), 
+        int(args['rotational_fraction']*len(rotational_test_labels)))
+    for index in rotational_test_index:
+        test_flow_files.append(rotational_test_flow_files[index])
+        test_intensity_files.append(rotational_test_intensity_files[index])
+        test_labels.append(rotational_test_labels[index])
+        test_distances.append(rotational_test_distances[index])
+
+    # shuffle data
+    temp = list(zip(train_flow_files, train_intensity_files, train_labels, train_distances)) 
+    random.shuffle(temp) 
+    train_flow_files, train_intensity_files, train_labels, train_distances = zip(*temp) 
+
+    temp = list(zip(test_flow_files, test_intensity_files, test_labels, test_distances)) 
+    random.shuffle(temp) 
+    test_flow_files, test_intensity_files, test_labels, test_distances = zip(*temp) 
+    
+    # group samples
+    S = args['S']
+    train_flow_files = get_grouped_list(train_flow_files, S)
+    train_intensity_files = get_grouped_list(train_intensity_files, S)
+    train_labels = get_grouped_list(train_labels, S)
+    train_distances = get_grouped_list(train_distances, S)
+    
+    test_flow_files = get_grouped_list(test_flow_files, S)
+    test_intensity_files = get_grouped_list(test_intensity_files, S)
+    test_labels = get_grouped_list(test_labels, S)
+    test_distances = get_grouped_list(test_distances, S)
+
+    end = time.time()
+    print('Generated {} train samples and {} test samples'.format(len(train_flow_files), len(test_flow_files)))
+    print('Data generation took {:.0f} second'.format(end - start))
+    
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_flow_files', train_flow_files)
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_intensity_files', train_intensity_files)
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_labels', train_labels)
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_distances', train_distances)
+    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_flow_files', test_flow_files)
+    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_intensity_files', test_intensity_files)
+    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_labels', test_labels)
+    np.save(data_path + 'set_{}/testing/'.format(set_number)+'test_distances', test_distances)
+    
+    return train_flow_files, train_intensity_files, train_labels, train_distances, \
+           test_flow_files, test_intensity_files, test_labels, test_distances
+
+
+# generate file paths for train data
+def generate_train_data(args):
+    '''
+    Args:
+    args: a dictionary that contains problem parameters
+
+    Returns:
+    train_flow_files: list of files for UV flows from for training
+    train_intensity_files: list of files for frame intensities for training
+    train_labels: list of labels (probability of hit, either 0 or 1) for training
+    '''
+
+    set_number = args['set_number']
+    data_path = args['data_path']
+    NNs = args['NNs']
+
+    file_types = ['hit', 'miss', 'retreat', 'rotation']
+    
+    train_flow_files = []
+    train_intensity_files = []
+    train_distances = []
+    train_labels = []
+    
+    rotational_train_flow_files = []
+    rotational_train_intensity_files = []
+    rotational_train_distances = []
+    rotational_train_labels = []
+    
+    for file_type in file_types:
+        # gather training paths and labels
+        train_path = data_path + 'set_{}/training/'.format(set_number) + \
+        file_type + '/UV_flow_samples/'
+        if os.path.isdir(train_path):
+            train_files = glob.glob(train_path + '*.npy')
+            for train_flow_file in train_files:
+                train_intensity_file = train_flow_file.replace('UV_flow_samples', 
+                    'intensities_samples_cg')
+                train_intensity_file = train_intensity_file.replace('UV_flow_sample', 
+                    'intensities_sample_cg')
+                train_distance_file = train_flow_file.replace('training', 
+                    'other_info')
+                train_distance_file = train_distance_file.replace('UV_flow_samples', 
+                    'distances')
+                train_distance_file = train_distance_file.replace('UV_flow_sample', 
+                    'distance')
+                train_flow =  np.load(train_flow_file, allow_pickle=True)
+                train_steps = train_flow.shape[0]
+                if file_type == 'hit':
+                    train_label = np.ones(NNs)
+                else:
+                    train_label = np.zeros(NNs)
+                if file_type == 'rotation':
+                    rotational_train_flow_files.append(train_flow_file)
+                    rotational_train_intensity_files.append(train_intensity_file)
+                    rotational_train_labels.append(train_label)
+                    rotational_train_distances.append(np.ones(train_steps))
+                else:
+                    train_flow_files.append(train_flow_file)
+                    train_intensity_files.append(train_intensity_file)
+                    train_labels.append(train_label)
+                    distances = np.load(train_distance_file, allow_pickle=True)
+                    distances_inverse = [1/item for sublist in distances for item in sublist]
+                    train_distances.append(np.asarray(distances_inverse))
+
+    # subsample rotational files
+    rotational_train_index = random.sample(range(len(rotational_train_labels)), 
+        int(args['rotational_fraction']*len(rotational_train_labels)))
+    for index in rotational_train_index:
+        train_flow_files.append(rotational_train_flow_files[index])
+        train_intensity_files.append(rotational_train_intensity_files[index])
+        train_labels.append(rotational_train_labels[index])
+        train_distances.append(rotational_train_distances[index])
+
+    # shuffle data
+    temp = list(zip(train_flow_files, train_intensity_files, train_labels, train_distances)) 
+    random.shuffle(temp) 
+    train_flow_files, train_intensity_files, train_labels, train_distances = zip(*temp) 
+    
+    # group samples
+    S = args['S']
+    train_flow_files = get_grouped_list(train_flow_files, S)
+    train_intensity_files = get_grouped_list(train_intensity_files, S)
+    train_labels = get_grouped_list(train_labels, S)
+    train_distances = get_grouped_list(train_distances, S)
+    
+    # sampling
+    train_flow_snapshots = []
+    train_intensity_snapshots = []
+    train_labels_snapshots = []
+    for file_path_flow, file_path_intensity, labels in zip(train_flow_files, train_intensity_files, train_labels):
+        steps_list_flow = []
+        steps_list_intensity = []
+        for s in range(S):
+            data_flow = np.load(file_path_flow[s], allow_pickle=True)
+            data_intensity = np.load(file_path_intensity[s], allow_pickle=True)
+            for dd in range(len(data_flow)): # len(data) indicates number of data samples in one data sample list
+                i = random.randint(0, len(data_flow[dd])-1) # randomly select one snapshot
+                step_flow = []
+                step_intensity = []
+                for j in range(len(data_flow[dd][i])): # len(data[dd][i]) indicates M
+                    if len(data_flow[dd][i][j].shape) == 1:
+                        step_flow.append(np.zeros((args['K']**2, 4)))
+                        step_intensity.append(np.zeros((args['K']**2)))
+                    else:
+                        step_flow.append(data_flow[dd][i][j])
+                        step_intensity.append(data_intensity[dd][i][j])
+                steps_list_flow.append(np.stack([np.stack(step_flow)]))
+                steps_list_intensity.append(np.stack([np.stack(step_intensity)]))
+        steps_list_extended_flow = []
+        steps_list_extended_intensity = []
+        weight_list_extended = []
+        label_list_extended = []
+        labels = np.array(labels).flatten()
+        for n in range(S*NNs):
+            steps_extended_flow, weight_extended, label_extended \
+                = get_extended_array(steps_list_flow[n], labels[n], 1)
+            steps_extended_intensity, weight_extended, label_extended \
+                = get_extended_array(steps_list_intensity[n], labels[n], 1)
+            steps_list_extended_flow.append(steps_extended_flow)
+            steps_list_extended_intensity.append(steps_extended_intensity)
+            weight_list_extended.append(weight_extended)
+            label_list_extended.append(label_extended)
+        steps_list_extended_flow = np.swapaxes(np.stack(steps_list_extended_flow), 0, 1)
+        steps_list_extended_intensity = np.swapaxes(np.stack(steps_list_extended_intensity), 0, 1)
+        weight_list_extended = np.swapaxes(np.stack(weight_list_extended), 0, 1)
+        label_list_extended = np.swapaxes(np.stack(label_list_extended), 0, 1)
+        
+        train_flow_snapshots.append(steps_list_extended_flow)
+        train_intensity_snapshots.append(steps_list_extended_intensity)
+        train_labels_snapshots.append(label_list_extended)
+        
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_flow_snapshots', train_flow_snapshots)
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_intensity_snapshots', train_intensity_snapshots)
+    np.save(data_path + 'set_{}/training/'.format(set_number)+'train_labels_snapshots', train_labels_snapshots)
+
+
+def load_compressed_dataset(args, file_path, labels):
+    """
+    This function loads compressed datasets, and prepares them for training fand testing.
+    
+    Args:
+    args: a dictionary that contains problem parameters
+    file_path: a list of file paths
+    labels: labels of the data contained in file paths
+    
+    Returns:
+    steps_list_extended: expanded and extended data
+    weight_list_extended: extended step weights
+    label_list_extended: extended labels
+    """
+    N = len(file_path)
+    T = 0
+    steps_list = []
+    for n in range(N):
+        data = np.load(file_path[n], allow_pickle=True)
+        for dd in range(len(data)): # len(data) indicates number of data samples in one data sample list
+            steps = []
+            T = np.maximum(T, len(data[dd])) # len(data[dd]) indicates total time steps
+            for i in range(len(data[dd])):
+                step = []
+                for j in range(args['M']): 
+                    if len(data[dd][i][j].shape) == 1:
+                        step.append(np.zeros((args['K']**2, 4)))
+                    else:
+                        step.append(data[dd][i][j])
+                steps.append(np.stack(step))
+            steps_list.append(np.stack(steps))
+    steps_list_extended = []
+    weight_list_extended = []
+    label_list_extended = []
+    for n in range(N*len(data)):
+        steps_extended, weight_extended, label_extended = get_extended_array(steps_list[n], labels[n], T)
+        steps_list_extended.append(steps_extended)
+        weight_list_extended.append(weight_extended)
+        label_list_extended.append(label_extended)
+    steps_list_extended = np.swapaxes(np.stack(steps_list_extended), 0, 1)
+    weight_list_extended = np.swapaxes(np.stack(weight_list_extended), 0, 1)
+    label_list_extended = np.swapaxes(np.stack(label_list_extended), 0, 1)
+    
+    return steps_list_extended, weight_list_extended, label_list_extended
+
+
+def get_grouped_list(input_list, S):
+    '''
+    Args:
+    input_list: # of sample data files in the folder, each sample data here is a list
+    S: # of sample data list in one batch in mini-batch training
+    
+    Returns:
+    output_list: a list of mini batches, len(output_list) =  # of mini batches in one training epoch
+    '''
+    output_list = []
+    N = np.int(len(input_list)/S)
+    for n in range(N):
+        tem_list = input_list[n*S:(n+1)*S]
+        output_list.append(tem_list)
+        
+    return output_list
+
+
+def get_extended_array(input_array, label, T):
+    """
+    This function extends the data sample (input_array) in certain batch to let it have the same
+    time dimension (T) as others.
+    
+    Args:
+    input_array: input array
+    label: scaler, label of the current input array
+    T: target length of the time dimension
+    
+    Returns:
+    output_array: extended data array
+    output_weight: extended step weights
+    output_label: extended label
+    """
+    T0 = input_array.shape[0]
+    output_array = np.zeros((T, )+input_array.shape[1:])
+    output_array[:T0] = input_array
+    output_weight = np.zeros(T)
+    output_weight[:T0] = 1./T0
+    output_label = np.zeros(T)
+    output_label[:] = label
+    
+    return output_array, output_weight, output_label
+    
+    
+#####################################
+####### Calculate the Hessian #######
+#####################################
         
 def get_gradient_hessian(args, train_flow_snapshots, train_labels_snapshots, parameters_in):
     # inputs
@@ -2996,40 +2816,34 @@ def get_gradient_hessian(args, train_flow_snapshots, train_labels_snapshots, par
     UV_flow = tf.compat.v1.placeholder(tf.float32, [None, None, M, K*K, 4], name = 'UV_flow')
     step_weights = tf.compat.v1.placeholder(tf.float32, [None, None], name='step_weights')
     labels = tf.compat.v1.placeholder(tf.float32, [None, None], name = 'labels')
-    intensity = None
-    if args['use_intensity']:
-        intensity = tf.compat.v1.placeholder(tf.float32, 
-            [None, K*K], name='intensity')
 
     # parameters
-    weights_intensity = None
     tau_1 = args['tau']
     a = 1.
     
     parameters_in_tf = tf.convert_to_tensor(parameters_in)
     
     b = tf.slice(parameters_in_tf, [0], [1]) 
-    intercept_e = tf.slice(parameters_in_tf, [1], [1]) 
-    intercept_i = tf.slice(parameters_in_tf, [2], [1])  
-    weights_e_raw = tf.slice(parameters_in_tf, [3], [72]) 
+    intercept_e = tf.slice(parameters_in_tf, [1], [1])   
+    weights_e_raw = tf.slice(parameters_in_tf, [2], [72]) 
+    intercept_i = tf.slice(parameters_in_tf, [74], [1])
     weights_i_raw = tf.slice(parameters_in_tf, [75], [72])
     
     weights_e = expand_weight(weights_e_raw, (K+1)//2, K, K%2==0) 
     weights_i = expand_weight(weights_i_raw, (K+1)//2, K, K%2==0)
 
     # Regularization
-    l1_l2_regu_we = tf.contrib.layers.l1_l2_regularizer(scale_l1=args["l1_regu_we"], scale_l2=args["l2_regu_we"], scope=None)
-    l1_l2_regu_wi = tf.contrib.layers.l1_l2_regularizer(scale_l1=args["l1_regu_wi"], scale_l2=args["l2_regu_wi"], scope=None)
-    l1_l2_regu_a = tf.contrib.layers.l1_l2_regularizer(scale_l1=args["l1_regu_a"], scale_l2=args["l2_regu_a"], scope=None)
+    regularizer_we = tf.contrib.layers.l1_l2_regularizer(scale_l1=args["l1_regu_we"], scale_l2=args["l2_regu_we"], scope=None)
+    regularizer_wi = tf.contrib.layers.l1_l2_regularizer(scale_l1=args["l1_regu_wi"], scale_l2=args["l2_regu_wi"], scope=None)
+    regularizer_a = tf.contrib.layers.l1_l2_regularizer(scale_l1=args["l1_regu_a"], scale_l2=args["l2_regu_a"], scope=None)
 
     # loss and error function
-    loss, error_step, error_trajectory, _, probabilities = \
-    lplc2.loss_error_C_inhibitory2(\
-         args, weights_e, weights_i, weights_intensity, intercept_e, intercept_i, UV_flow, intensity, \
-         labels, tau_1, a, b, step_weights, l1_l2_regu_we, l1_l2_regu_wi, l1_l2_regu_a)
+    loss, probabilities = \
+    lplc2.get_loss_and_prob(args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, \
+                   labels, tau_1, a, b, step_weights, regularizer_we, regularizer_wi, regularizer_a)
 
-    # Calculate gradient
-    Grad = flatten(tf.gradients(loss, parameters_in_tf))
+    # # Calculate gradient
+    # Grad = flatten(tf.gradients(loss, parameters_in_tf))
 #     # Calculate gradient of gradient
 #     Grad_grad = tf.map_fn(lambda v: get_Hv_op(Grad, parameters_in_tf, v), \
 #                           tf.eye(tf.shape(parameters_in_tf)[0], tf.shape(parameters_in_tf)[0]))
@@ -3038,10 +2852,10 @@ def get_gradient_hessian(args, train_flow_snapshots, train_labels_snapshots, par
     
     step_weights_samples = np.ones_like(train_labels_snapshots)
     with tf.compat.v1.Session() as sess:
-        loss_res, grad_res, weights_e_out, weights_i_out = sess.run([loss, Grad, weights_e, weights_i], \
+        loss_res = sess.run(loss, \
                  {UV_flow:train_flow_snapshots, labels:train_labels_snapshots, step_weights: step_weights_samples})
 
-    return loss_res, grad_res, weights_e_out, weights_i_out
+    return loss_res
 
 
 def get_Hv_op(grad, params, v):
@@ -3076,12 +2890,79 @@ def expand_weight(weights, num_row, num_column, is_even):
         weights_flipped = tf.concat([weights_reshaped, 
             tf.reverse(weights_reshaped[:-1], axis=[0])], axis=0)
     weights_reshaped_back = tf.reshape(weights_flipped, [num_column**2, 1])
+    
     return weights_reshaped_back
 
 
-#####################
-### miscellaneous ###
-#####################
+#############################
+####### miscellaneous #######
+#############################
+
+# leaky relu
+def get_leaky_relu(alpha_leak, x):
+    if x >= 0:
+        return x
+    else:
+        return alpha_leak*x
+    
+
+def sigmoid_array(x): 
+    return 1 / (1 + np.exp(-x))
+
+
+def get_hist(arr):
+    arr = arr.flatten()
+    bins = np.int(np.sqrt(arr.shape[0]))
+    bins = np.minimum(bins, 1000)
+    hist, bin_edges = np.histogram(arr, bins, density=True)
+    bin_centers = 0.5*(bin_edges[:-1]+bin_edges[1:])
+    
+    return hist, bin_centers
+
+
+# Smooth a trajectory with a Gaussian filter
+def get_filtered_traj(traj, sigma):
+    traj_filtered = np.zeros_like(traj)
+    P = traj.shape[1]
+    dims = traj.shape[2]
+    assert dims == 3, 'The dimension should be 3!'
+    for p in range(P):
+        for i in range(dims):
+            traj_filtered[:, p, i] = gaussian_filter(traj[:, p, i], sigma=sigma, mode='nearest')
+        
+    return traj_filtered
+
+
+# general temporal filter
+def general_temp_filter(n, tau_1, dt, signal_seq):
+    '''
+    Args:
+    n: filter order, 0 means no filter
+    tau_1: timescale of the filter (sec)
+    dt: simulation time step (sec)
+    signal_seq: signal sequence to be filtered
+    
+    Returns:
+    filtered_sig: filtered signal, single data point
+    '''
+    if n == 0:
+        return signal_seq[-1, :]
+    elif n == 1:
+        T = signal_seq.shape[0]
+        ts = dt*np.arange(T)
+        G_n = (1./tau_1)*np.exp(-ts/tau_1)
+        G_n = G_n/G_n.sum()
+        filtered_sig = np.dot(np.flip(G_n), signal_seq)
+        return filtered_sig
+    else:
+        T = signal_seq.shape[0]
+        ts = dt*np.arange(T)
+        G_n = (1./np.math.factorial(n-1))*(ts**(n-1)/(tau_1**n))*np.exp(-ts/tau_1)
+        G_n = G_n/G_n.sum()
+        filtered_sig = np.dot(np.flip(G_n), signal_seq)
+        return filtered_sig
+
+
 def get_error_binomial(n_sample1, n_sample2):
     N = n_sample1+n_sample2
     p = n_sample1/N
@@ -3096,3 +2977,36 @@ def get_propagated_error(error, n_sample1, n_sample2):
     ratio_error = ratio*np.sqrt((error/n_sample1)**2+(error/n_sample2)**2)
     
     return ratio_error
+
+
+def make_set_folder(set_number, savepath):
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/hit/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/hit/UV_flow_samples')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/miss/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/miss/UV_flow_samples')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/retreat/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/retreat/UV_flow_samples')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/rotation/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'training/rotation/UV_flow_samples')
+    
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/hit/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/hit/UV_flow_samples')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/miss/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/miss/UV_flow_samples')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/retreat/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/retreat/UV_flow_samples')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/rotation/intensities_samples_cg')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'testing/rotation/UV_flow_samples')
+    
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/hit/trajectories')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/hit/distances')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/hit/distances/sample')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/miss/trajectories')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/miss/distances')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/miss/distances/sample')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/retreat/trajectories')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/retreat/distances')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/retreat/distances/sample')
+    os.makedirs(savepath+'set_{}/'.format(set_number)+'other_info/rotation/trajectories')
+    
+    

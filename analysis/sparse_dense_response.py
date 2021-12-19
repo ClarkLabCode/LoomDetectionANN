@@ -17,7 +17,7 @@ import numpy as np
 import helper_functions as hpfn
 
 
-figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/'
+figure_path = '/Volumes/Baohua/research/loom_detection/results/revision/'
 if not os.path.exists(figure_path):
     os.makedirs(figure_path)
 if not os.path.exists(figure_path+'sparse_and_dense/'):
@@ -30,7 +30,7 @@ for M in [1, 2, 4, 8, 16, 32, 64, 128, 192, 256]:
     pad = 2*L
     NNs = 10
     set_number = np.int(1000+M)
-    data_path = figure_path+'model_clustering/clusterings/'
+    data_path = figure_path+'model_clustering_ln/clusterings/'
     model_folders = np.load(data_path+'model_folders_M{}.npy'.format(M), allow_pickle=True)
     data_path = '/Volumes/Baohua/data_on_hd/loom/multi_lplc2_D5_L4_exp/set_{}/'.format(set_number)
     data_types = ['hit', 'miss', 'retreat', 'rotation']
@@ -45,14 +45,14 @@ for M in [1, 2, 4, 8, 16, 32, 64, 128, 192, 256]:
     args['M'] = M
     args['temporal_filter'] = False
     args['tau_1'] = 1.
-    model_types = ['excitatory', 'excitatory_WNR', 'inhibitory1', 'inhibitory2', 'linear']
-    model_type = model_types[3]
+    model_types = ['linear', 'rectified inhibition']
+    model_type = model_types[0]
 
     filter_types = ['outward', 'inward']
 
     for ind, filter_type in enumerate(filter_types):
 
-        model_path = model_folders[ind][2]+'/'
+        model_path = model_folders[ind][0]+'/'
         prob_mean_ = []
         prob_max_ = []
         prob_all_ = []

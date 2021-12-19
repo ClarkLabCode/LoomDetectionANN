@@ -65,58 +65,74 @@ def get_output_LPLC2(args, weights_e, weights_i, intercept_e, intercept_i, UV_fl
     
     if not args['use_ln']:
         # inhibitory
-        for i in range(4):
-            if args['rotation_symmetry']:
-                weights_i_reshaped = tf.reshape(weights_i, [K, K, 1])
-                weights_i_rotated = tf.image.rot90(weights_i_reshaped, rotate_num_list[i])
-                weights_i_reshaped_back = tf.reshape(weights_i_rotated, [K*K, 1])
-                if args['activation'] == 0:
-                    output_t = output_t - tf.nn.relu(tf.tensordot(UV_flow_t[:, :, :, i], 
+        if args['rectified_inhibition']:
+            for i in range(4):
+                if args['rotation_symmetry']:
+                    weights_i_reshaped = tf.reshape(weights_i, [K, K, 1])
+                    weights_i_rotated = tf.image.rot90(weights_i_reshaped, rotate_num_list[i])
+                    weights_i_reshaped_back = tf.reshape(weights_i_rotated, [K*K, 1])
+                    if args['activation'] == 0:
+                        output_t = output_t - tf.nn.relu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i_reshaped_back, axes=[[2], [0]])+intercept_i)
+                    elif args['activation'] == 1:
+                        output_t = output_t - tf.nn.leaky_relu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i_reshaped_back, axes=[[2], [0]])+intercept_i, alpha=args['leaky_relu_constant'])
+                    elif args['activation'] == 2:
+                        output_t = output_t - tf.nn.elu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i_reshaped_back, axes=[[2], [0]])+intercept_i)
+                    elif args['activation'] == 3:
+                        output_t = output_t - tf.math.tanh(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i_reshaped_back, axes=[[2], [0]])+intercept_i)
+                else:
+                    if args['activation'] == 0:
+                        output_t = output_t - tf.nn.relu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i[:, i], axes=[[2], [0]])+intercept_i)
+                    elif args['activation'] == 1:
+                        output_t = output_t - tf.nn.leaky_relu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i[:, i], axes=[[2], [0]])+intercept_i, alpha=args['leaky_relu_constant'])
+                    elif args['activation'] == 2:
+                        output_t = output_t - tf.nn.elu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i[:, i], axes=[[2], [0]])+intercept_i)
+                    elif args['activation'] == 3:
+                        output_t = output_t - tf.math.tanh(tf.tensordot(UV_flow_t[:, :, :, i], 
+                            weights_i[:, i], axes=[[2], [0]])+intercept_i)
+        else:
+            for i in range(4):
+                if args['rotation_symmetry']:
+                    weights_i_reshaped = tf.reshape(weights_i, [K, K, 1])
+                    weights_i_rotated = tf.image.rot90(weights_i_reshaped, rotate_num_list[i])
+                    weights_i_reshaped_back = tf.reshape(weights_i_rotated, [K*K, 1])
+                    output_t = output_t - (tf.tensordot(UV_flow_t[:, :, :, i], 
                         weights_i_reshaped_back, axes=[[2], [0]])+intercept_i)
-                elif args['activation'] == 1:
-                    output_t = output_t - tf.nn.leaky_relu(tf.tensordot(UV_flow_t[:, :, :, i], 
-                        weights_i_reshaped_back, axes=[[2], [0]])+intercept_i, alpha=args['leaky_relu_constant'])
-                elif args['activation'] == 2:
-                    output_t = output_t - tf.nn.elu(tf.tensordot(UV_flow_t[:, :, :, i], 
-                        weights_i_reshaped_back, axes=[[2], [0]])+intercept_i)
-                elif args['activation'] == 3:
-                    output_t = output_t - tf.math.tanh(tf.tensordot(UV_flow_t[:, :, :, i], 
-                        weights_i_reshaped_back, axes=[[2], [0]])+intercept_i)
-            else:
-                if args['activation'] == 0:
-                    output_t = output_t - tf.nn.relu(tf.tensordot(UV_flow_t[:, :, :, i], 
+                else:
+                    output_t = output_t - (tf.tensordot(UV_flow_t[:, :, :, i], 
                         weights_i[:, i], axes=[[2], [0]])+intercept_i)
-                elif args['activation'] == 1:
-                    output_t = output_t - tf.nn.leaky_relu(tf.tensordot(UV_flow_t[:, :, :, i], 
-                        weights_i[:, i], axes=[[2], [0]])+intercept_i, alpha=args['leaky_relu_constant'])
-                elif args['activation'] == 2:
-                    output_t = output_t - tf.nn.elu(tf.tensordot(UV_flow_t[:, :, :, i], 
-                        weights_i[:, i], axes=[[2], [0]])+intercept_i)
-                elif args['activation'] == 3:
-                    output_t = output_t - tf.math.tanh(tf.tensordot(UV_flow_t[:, :, :, i], 
-                        weights_i[:, i], axes=[[2], [0]])+intercept_i)
+
     
     # sum responses across multiple units
-    if args['activation'] == 0:
-        if not args['square_activation']:
-            output_t = tf.reduce_sum(tf.nn.relu(output_t), axis=1)
-        else:
-            output_t = tf.reduce_sum(tf.math.square(tf.nn.relu(output_t)), axis=1)
-    elif args['activation'] == 1:
-        if not args['square_activation']:
-            output_t = tf.reduce_sum(tf.nn.leaky_relu(output_t, alpha=args['leaky_relu_constant']), axis=1)
-        else:
-            output_t = tf.reduce_sum(tf.math.squre(tf.nn.leaky_relu(output_t, alpha=args['leaky_relu_constant'])), axis=1)
-    elif args['activation'] == 2:
-        if not args['square_activation']:
-            output_t = tf.reduce_sum(tf.nn.elu(output_t), axis=1)
-        else:
-            output_t = tf.reduce_sum(tf.math.square(tf.nn.elu(output_t)), axis=1)
-    elif args['activation'] == 3:
-        if not args['square_activation']:
-            output_t = tf.reduce_sum(tf.math.tanh(output_t), axis=1)
-        else:
-            output_t = tf.reduce_sum(tf.math.square(tf.math.tanh(output_t)), axis=1)
+    if not args['glm']:
+        if args['activation'] == 0:
+            if not args['square_activation']:
+                output_t = tf.reduce_sum(tf.nn.relu(output_t), axis=1)
+            else:
+                output_t = tf.reduce_sum(tf.math.square(tf.nn.relu(output_t)), axis=1)
+        elif args['activation'] == 1:
+            if not args['square_activation']:
+                output_t = tf.reduce_sum(tf.nn.leaky_relu(output_t, alpha=args['leaky_relu_constant']), axis=1)
+            else:
+                output_t = tf.reduce_sum(tf.math.squre(tf.nn.leaky_relu(output_t, alpha=args['leaky_relu_constant'])), axis=1)
+        elif args['activation'] == 2:
+            if not args['square_activation']:
+                output_t = tf.reduce_sum(tf.nn.elu(output_t), axis=1)
+            else:
+                output_t = tf.reduce_sum(tf.math.square(tf.nn.elu(output_t)), axis=1)
+        elif args['activation'] == 3:
+            if not args['square_activation']:
+                output_t = tf.reduce_sum(tf.math.tanh(output_t), axis=1)
+            else:
+                output_t = tf.reduce_sum(tf.math.square(tf.math.tanh(output_t)), axis=1)
+    else:
+        output_t = tf.reduce_sum(output_t, axis=1)
     output_t = tf.reshape(output_t, [-1]) # shape = batch_size
     
     return output_t
@@ -262,6 +278,9 @@ def train_and_test_model(args, train_flow_files, train_labels, test_flow_files, 
     with open(log_file, 'w') as f:
         f.write('Model setup:\n')
         f.write('----------------------------------------\n')
+        f.write('use_ln: {}\n'.format(args['use_ln']))
+        f.write('glm: {}\n'.format(args['glm']))
+        f.write('rectified_inhibition: {}\n'.format(args['rectified_inhibition']))
         f.write('set_number: {}\n'.format(args['set_number']))
         f.write('data_path: {}\n'.format(args['data_path']))
         f.write('rotational_fraction: {}\n'.format(args['rotational_fraction']))
@@ -276,9 +295,6 @@ def train_and_test_model(args, train_flow_files, train_labels, test_flow_files, 
         f.write('activation: {}\n'.format(args['activation']))
         f.write('square_activation: {}\n'.format(args['square_activation']))
         f.write('leaky_relu_constant: {}\n'.format(args['leaky_relu_constant']))
-        f.write('fine_tune_weights: {}\n'.format(args['fine_tune_weights'])) 
-        f.write('fine_tune_intercepts_and_b: {}\n'.format(args['fine_tune_intercepts_and_b'])) 
-        f.write('fine_tune_model_dir: {}\n'.format(args['fine_tune_model_dir']))  
         f.write('save_intermediate_weights: {}\n'.format(args['save_intermediate_weights']))
         f.write('save_steps: {}\n'.format(args['save_steps']))
         f.write('use_step_weight: {}\n'.format(args['use_step_weight']))
@@ -309,6 +325,9 @@ def train_and_test_model(args, train_flow_files, train_labels, test_flow_files, 
         scale_initializer = tf.compat.v1.keras.initializers.VarianceScaling()
         positive_initializer_e = tf.compat.v1.keras.initializers.TruncatedNormal(mean=0.2, stddev=0.1)
         positive_initializer_i = tf.compat.v1.keras.initializers.TruncatedNormal(mean=0.2, stddev=0.1)
+        real_initializer_e = tf.compat.v1.keras.initializers.TruncatedNormal(mean=0., stddev=0.1)
+        real_initializer_i = tf.compat.v1.keras.initializers.TruncatedNormal(mean=0., stddev=0.1)
+        real_initializer_intercept = tf.compat.v1.keras.initializers.TruncatedNormal(mean=0., stddev=0.01)
         zero_initializer = tf.constant_initializer(0)
         positive_initializer = tf.constant_initializer(1.)
         negative_initializer = tf.constant_initializer(-1.)
@@ -318,38 +337,32 @@ def train_and_test_model(args, train_flow_files, train_labels, test_flow_files, 
                 weights_e = tf.Variable(initializer([K*K, 1]), name='weights_e')
                 weights_i = tf.Variable(initializer([K*K, 1]), name='weights_i')
             else:
-                if args['fine_tune_weights']:
-                    saved_weights_e = np.float32(np.load(args['fine_tune_model_dir']+'trained_weights_e.npy'))
-                    weights_e_raw = tf.Variable(initial_value=saved_weights_e[:(K+1)//2*K, 0], name='weights_e')
-                    weights_e = expand_weight(weights_e_raw, (K+1)//2, K, K%2==0)
-                    saved_weights_i = np.float32(np.load(args['fine_tune_model_dir']+'trained_weights_i.npy'))
-                    weights_i_raw = tf.Variable(initial_value=saved_weights_i[:(K+1)//2*K, 0], name='weights_i')
-                    weights_i = expand_weight(weights_i_raw, (K+1)//2, K, K%2==0)
-                else:
+                if not args['use_ln']:
                     weights_e_raw = tf.Variable(positive_initializer_e([(K+1)//2*K, 1]), name='weights_e')
                     weights_e = expand_weight(weights_e_raw, (K+1)//2, K, K%2==0)
                     weights_i_raw = tf.Variable(positive_initializer_i([(K+1)//2*K, 1]), name='weights_i')
                     weights_i = expand_weight(weights_i_raw, (K+1)//2, K, K%2==0)
+                else:
+                    weights_e_raw = tf.Variable(real_initializer_e([(K+1)//2*K, 1]), name='weights_e')
+                    weights_e = expand_weight(weights_e_raw, (K+1)//2, K, K%2==0)
+                    weights_i_raw = tf.Variable(real_initializer_i([(K+1)//2*K, 1]), name='weights_i')
+                    weights_i = expand_weight(weights_i_raw, (K+1)//2, K, K%2==0)
         else:
-            weights_e = tf.Variable(positive_initializer_e([K*K, 4]), name='weights_e')
-            weights_i = tf.Variable(positive_initializer_i([K*K, 4]), name='weights_i')
+            if not args['use_ln']:
+                weights_e = tf.Variable(positive_initializer_e([K*K, 4]), name='weights_e')
+                weights_i = tf.Variable(positive_initializer_i([K*K, 4]), name='weights_i')
+            else:
+                weights_e = tf.Variable(real_initializer_e([K*K, 4]), name='weights_e')
+                weights_i = tf.Variable(real_initializer_i([K*K, 4]), name='weights_i')
         # slope or scale on the summed response
         if args['train_a']:
             a = tf.Variable(positive_initializer([1]), name='a')
         else:
             a = 1.
         # intercepts and b
-        if args['fine_tune_intercepts_and_b']:
-            saved_intercept_e = np.float32(np.load(args['fine_tune_model_dir']+'trained_intercept_e.npy'))
-            intercept_e = tf.Variable(initial_value=saved_intercept_e, name='intercept_e')
-            saved_intercept_i = np.float32(np.load(args['fine_tune_model_dir']+'trained_intercept_i.npy'))
-            intercept_i = tf.Variable(initial_value=saved_intercept_i, name='intercept_i')
-            saved_b = np.float32(np.load(args['fine_tune_model_dir']+'trained_b.npy'))
-            b = tf.Variable(initial_value=saved_b, name='b')
-        else:
-            intercept_e = tf.Variable(scale_initializer([1]), name='intercept_e')
-            intercept_i = tf.Variable(scale_initializer([1]), name='intercept_i')
-            b = tf.Variable(negative_initializer([1]), name='b') # Put a negative prior on b
+        intercept_e = tf.Variable(real_initializer_intercept([1]), name='intercept_e')
+        intercept_i = tf.Variable(real_initializer_intercept([1]), name='intercept_i')
+        b = tf.Variable(negative_initializer([1]), name='b') # Put a negative prior on b
         # log of the timescale in the temporal filters
         if args['learn_tau']:
             tau_1 = tf.Variable(negative_initializer([-1]), name='tau_1')

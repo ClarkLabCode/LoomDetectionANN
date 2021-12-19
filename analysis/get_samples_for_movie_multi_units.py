@@ -16,11 +16,11 @@ import numpy as np
 
 import dynamics_3d as dn3d
 import optical_signal as opsg
-import samples_generation_multi_units as smgnmu
+import samples_generation_multi_units_revision as smgnmur
 import flow_field as flfd
 import helper_functions as hpfn
 
-figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/'
+figure_path = '/Volumes/Baohua/research/loom_detection/results/revision/'
 if not os.path.exists(figure_path):
     os.makedirs(figure_path)
     
@@ -30,6 +30,7 @@ R = 1 # radius of the ball (m)
 Rs = np.array([R])
 dt = 0.01 # time step (sec)
 dynamics_fun = dn3d.dynamics_fun_zero_field # dynamics that is imposed on the object
+around_z_angles = np.random.random(M) * 0 # rotation angles around the z axis
 eta_1 = 0. # random force added on the ball (m/sec^2)
 sigma = 0. # noise added to images
 theta_r = np.deg2rad(30) # half of the receptive field width (rad)
@@ -54,7 +55,7 @@ for data_type in data_types:
     if data_type == 'hit':
         x, y, z = 1.1 * hpfn.get_normalized_vector([0.33224794, -0.71471, -0.621718])
         vx, vy, vz = 5. * hpfn.get_normalized_vector([0.016, -0.04, -0.035])
-        traj, _ = smgnmu.generate_one_trajectory_hit(M, R, D_max, theta_r, dt, dynamics_fun, eta_1, x, y, z, vx, vy, vz)
+        traj, _ = smgnmur.generate_one_trajectory_hit(R, D_max, dt, dynamics_fun, eta_1, x, y, z, vx, vy, vz)
     elif data_type == 'miss':
         x = 5*x0
         y = 5*y0
@@ -67,7 +68,7 @@ for data_type in data_types:
         vx = vx + v_add[0]
         vy = vy + v_add[1]
         vz = vz + v_add[2]
-        traj, dist = smgnmu.generate_one_trajectory_miss(M, R, D_max, theta_r, dt, dynamics_fun, eta_1, x, y, z, vx, vy, vz)
+        traj, dist = smgnmur.generate_one_trajectory_miss(R, D_max, dt, dynamics_fun, eta_1, x, y, z, vx, vy, vz)
         min_D = np.argmin(dist)
         traj = traj[:min_D+6]
     elif data_type == 'retreat':
@@ -79,12 +80,12 @@ for data_type in data_types:
         vy = y
         vz = z
         vx, vy, vz = 5 * hpfn.get_normalized_vector([vx, vy, vz])
-        traj, _ = smgnmu.generate_one_trajectory_retreat(M, R, D_max, theta_r, dt, dynamics_fun, eta_1, x, y, z, vx, vy, vz)
+        traj, _ = smgnmur.generate_one_trajectory_retreat(R, D_max, dt, dynamics_fun, eta_1, x, y, z, vx, vy, vz)
     elif data_type == 'rotation':
         P = 100
         steps = 100
-        D_min = 5*R
-        D_max = 15*R
+        D_min_r = 5*R
+        D_max_r = 15*R
         Rs = np.random.random(P) * R
         theta_s = np.arccos(2*np.random.random()-1)
         phi_s = 2.*np.pi*np.random.random()
@@ -92,8 +93,8 @@ for data_type in data_types:
         ya = 1
         za = 1
         fixed_z = -200*R
-        traj = smgnmu.generate_one_trajectory_rot(M, D_min, D_max, P, steps, dt, \
-                                                  xa, ya, za, random_z=False, fixed_z=fixed_z)
+        traj = smgnmur.generate_one_trajectory_rot(D_min_r, D_max_r, P, steps, dt, \
+                                                  xa, ya, za, scal=200, random_z=False, fixed_z=fixed_z)
     print(f'Length of the trajectory is {len(traj)}.')
 
     N = K*L + 4*L # Size of each frame, the additional 4*L is for spatial filtering and will be deleted afterwards.
@@ -109,7 +110,7 @@ for data_type in data_types:
     coord_matrix = opsg.get_coord_matrix(phi_matrix, theta_matrix, 1.)
 
     intensities_sample_cg_list, UV_flow_sample_list, _ = \
-        smgnmu.generate_one_sample_exp(M, Rs, [traj], sigma, theta_r, theta_matrix, coord_matrix, \
+        smgnmur.generate_one_sample_exp(M, Rs, [traj], around_z_angles, sigma, theta_r, theta_matrix, coord_matrix, \
                             space_filter, K, L, dt, sample_dt, delay_dt)
     intensities_sample_cg = intensities_sample_cg_list[0]
     UV_flow_sample = UV_flow_sample_list[0]

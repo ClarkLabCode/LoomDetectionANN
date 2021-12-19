@@ -18,7 +18,7 @@ import glob
 import helper_functions as hpfn
 
 
-figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/'
+figure_path = '/Volumes/Baohua/research/loom_detection/results/revision/'
 if not os.path.exists(figure_path):
     os.makedirs(figure_path)
 if not os.path.exists(figure_path+'grid_response/'):
@@ -28,11 +28,6 @@ data_path = '/Volumes/Baohua/data_on_hd/loom/grid_conv2_M1_L100_par_exp/'
 
 for M in [32, 256]:
 
-    # response, outward filters
-    model_folders = np.load(figure_path + '/model_clustering/clusterings/model_folders_M{}.npy'.format(M), \
-                            allow_pickle=True)
-    # model
-    in_or_out = 0 # 0: outward; 1: inward
     args = {}
     args["n"] = 0
     args["dt"] = 0.03
@@ -43,11 +38,17 @@ for M in [32, 256]:
     args['M'] = M
     args['temporal_filter'] = False
     args['tau_1'] = 1.
-    model_types = ['excitatory', 'excitatory_WNR', 'inhibitory1', 'inhibitory2']
+    model_types = ['linear', 'rectified inhibition']
+    model_type = model_types[0]
     filter_types = ['outward', 'inward']
-    model_type = model_types[3]
+
+    # response, outward filters
+    model_folders = np.load(figure_path + '/model_clustering_ln/clusterings/model_folders_M{}.npy'.format(M), \
+                            allow_pickle=True)
+    # model
+    in_or_out = 0 # 0: outward; 1: inward
     filter_type = filter_types[in_or_out]
-    model_path = model_folders[in_or_out][2]+'/'
+    model_path = model_folders[in_or_out][0]+'/'
     print(model_path)
 
     res_rest_all = []
@@ -76,25 +77,12 @@ for M in [32, 256]:
 
 
     # response, inward filters
-    model_folders = np.load(figure_path + '/model_clustering/clusterings/model_folders_M{}.npy'.format(M), \
+    model_folders = np.load(figure_path + '/model_clustering_ln/clusterings/model_folders_M{}.npy'.format(M), \
                             allow_pickle=True)
     # model
     in_or_out = 1 # 0: outward; 1: inward
-    args = {}
-    args["n"] = 0
-    args["dt"] = 0.03
-    args["use_intensity"] = False
-    args["symmetrize"] = True
-    args['K'] = 12
-    args['alpha_leak'] = 0.0
-    args['M'] = M
-    args['temporal_filter'] = False
-    args['tau_1'] = 1.
-    model_types = ['excitatory', 'excitatory_WNR', 'inhibitory1', 'inhibitory2']
-    filter_types = ['outward', 'inward']
-    model_type = model_types[3]
     filter_type = filter_types[in_or_out]
-    model_path = model_folders[in_or_out][2]+'/'
+    model_path = model_folders[in_or_out][0]+'/'
 
     res_rest_all = []
     res_T_all = []

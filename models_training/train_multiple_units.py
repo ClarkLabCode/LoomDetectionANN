@@ -43,11 +43,13 @@ def train_multiple_units_f(M, seed_left, seed_right, n_cores):
     """
     # some hyperparameters 
     args = {}
-    args['use_ln'] = False # whether train an ln model without individual inhibitory units
-    args['restrict_nonneg_weight'] = True # whether restrict the weights to be nonnegative
+    args['use_ln'] = True # whether train an ln model without individual inhibitory units
+    args['restrict_nonneg_weight'] = False # whether restrict the weights to be nonnegative
+    args['glm'] = False # whether reduce the model to a glm, need args['use_ln'] to be true and args['restrict_nonneg_weight'] false
+    args['rectified_inhibition'] = False # whether rectify the inhibition or not
     args['M'] = M # total number of model units
-    args['save_folder'] = 'multi_lplc2_training_D5_exp/' # folder that stores the trained results
-    args['data_path'] = '../../data/loom/multi_lplc2_D5_L4_exp/' # path for the training and testing dataset
+    args['save_folder'] = 'multi_lplc2_training_D5_exp_ln_relu_8fold_M32_random_z_nosymm_old_stimuli/' # folder that stores the trained results
+    args['data_path'] = '../../data/loom/multi_lplc2_D5_L4_exp_random_z_M32_8fold/' # path for the training and testing dataset
     args['set_number'] = np.int(1000+args['M']) # indicate which dataset to be used for training
     args['N_epochs'] = 2000 # number of training epochs
     args['rotational_fraction'] = 1.0 # fraction of rotational data that is used in training and testing
@@ -55,8 +57,8 @@ def train_multiple_units_f(M, seed_left, seed_right, n_cores):
     args['L'] = 4 # resoluton of of each element in the args['K'] by args['K'] receptive field.
     args['lr'] = 1e-3 # learning rate
     args['restrict_nonpos_intercept'] = False # whether restrict the intercepts to be nonpositive 
-    args['rotation_symmetry'] = True # whether impose 90-deg rotation symmetry in the weights
-    args['flip_symmetry'] = True # whether impose left-right or up-down symmetry in the weights
+    args['rotation_symmetry'] = False # whether impose 90-deg rotation symmetry in the weights
+    args['flip_symmetry'] = False # whether impose left-right or up-down symmetry in the weights
     args['train_a'] = False # whether train the slope a inside the probabilistic model (the sigmoid function)
     args['report_num'] = 400 # how many steps to report the training process once
     args['max_response'] = False # whether use maximum response or the averaged one over the whole trajectory
@@ -68,9 +70,6 @@ def train_multiple_units_f(M, seed_left, seed_right, n_cores):
     args['activation'] = 0 # activation function used in the model, 0 is ReLU, 1 is Leaky ReLU, 2 is ELU, 3 is tanh
     args['leaky_relu_constant'] = 0.02 # the coefficient for the negative part of the leaky ReLU
     args['square_activation'] = False # whether square the response of each model unit
-    args['fine_tune_weights'] = False # whether use fine tuned initialization for the weights
-    args['fine_tune_intercepts_and_b'] = False # whether use fine tuned initialization for the intercepts and b.
-    args['fine_tune_model_dir'] = 'hand_tuned_weights/inhibitory2/' # folder that stores the fine funed initializations
     args['save_intermediate_weights'] = False # whether save intermediate weights
     args['save_steps'] = np.int(args['N_epochs']/10) # how many training epochs to save the intermediate weights once
     args['use_step_weight'] = False # whether use step weights to weight the response or not
@@ -163,7 +162,7 @@ def run_training_procedure(config, args, train_flow_snapshots, train_labels_snap
     
     # make the folders that store the training results
     args['save_path'] =\
-    '../results/'+args['save_folder']+'/M_{}/lr_{}/regu_{}/seed_{}_{}/'\
+    '../results/'+args['save_folder']+'M_{}/lr_{}/regu_{}/seed_{}_{}/'\
         .format(args['M'], args['lr'], args['l2_regu_we'], config['random_seed'], datetime.now().strftime('%Y%m%d%H%M%S'))
     if not os.path.exists(args['save_path']):
         os.makedirs(args['save_path'])

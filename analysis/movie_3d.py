@@ -15,7 +15,8 @@ from PIL import Image
 
 import optical_signal as opsg
 
-figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/'
+# figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/'
+figure_path = '/Volumes/Baohua/research/loom_detection/results/revision/'
 if not os.path.exists(figure_path + 'movies/movie_frames_3d/'):
     os.makedirs(figure_path + 'movies/movie_frames_3d/')
 
