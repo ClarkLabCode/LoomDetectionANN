@@ -598,7 +598,7 @@ def train_and_test_model(args, train_flow_files, train_labels, test_flow_files, 
             # accumulate true labels and predicted probabilities for test data
             for ii in range(labels_i.shape[1]):
                 y_true_test.append(labels_i[0][ii])
-                y_pred_test.append(probabilities_i[ii])
+                y_pred_test.append(np.round(probabilities_i[ii], 4))
                 if labels_i[0][ii] == 0:
                     if probabilities_i[ii] < 0.5:
                         true_negative = true_negative + 1
