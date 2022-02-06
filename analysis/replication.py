@@ -20,11 +20,11 @@ import optical_signal as opsg
 import samples_generation_multi_units as smgnmu
 
 
-figure_path = '/Volumes/Baohua/research/loom_detection/results/final_figures_for_paper_exp/' # where to store the results
+figure_path = '/Volumes/Baohua/research/loom_detection/results/revision/' # where to store the results
 if not os.path.exists(figure_path):
     os.makedirs(figure_path)
 
-data_folder =  '/Volumes/Baohua/data_on_hd/loom/Klapoetke_stimuli_L50_dt_0.01_exp_2/' # where the data are stored
+data_folder =  '/Volumes/Baohua/data_on_hd/loom/Klapoetke_stimuli_L50_dt_0.01_exp/' # where the data are stored
 
 ####### Klapoetke #######
 has_inhibition = True
@@ -66,8 +66,8 @@ ymax_dict['4E'] = 0.6
 ymax_dict['4G'] = 0.1
 
 
-model_types = ['excitatory', 'excitatory_WNR', 'inhibitory1', 'inhibitory2']
-model_type = model_types[3]
+model_types = ['linear', 'rectified inhibition']
+model_type = model_types[1]
 
 filter_types = ['outward', 'inward']
 filter_type = filter_types[0]
@@ -86,13 +86,14 @@ args['tau_1'] = 1.
 
 # save as '_M{}_1' if the inhibitory filter has the bulb on the right
 # save as '_M{}_2' if the inhibitory filter does not have the bulb on the right
+# save as '_M{}_3' if the inhibitory filter is missing
 
 # 16 (0): outward without (with) the right bulb in inhibitory filter, delta, M = 256
 # 17 (0): outward without (with) the right bulb in inhibitory filter, exponential, M = 256
-# 5 (2): outward without (with) the right bulb in inhibitory filter, exponential, M = 192
-model_dict = {0:1, 17:2}
+# 5: outward without the inhibitory filter, exponential, M = 256
+model_dict = {0:1, 17:2, 5:3}
 
-for outward_model in [17, 0]:
+for outward_model in [17, 0, 5]:
     saved_results_path = figure_path+'model_clustering/clusterings/'
     model_folders = np.load(saved_results_path+'model_folders_M{}.npy'.format(M), allow_pickle=True)
     model_path = model_folders[0][outward_model]+'/'
@@ -116,7 +117,7 @@ for outward_model in [17, 0]:
             intercept_e = np.load(model_path + "trained_intercept_e.npy")
             tau_1 = np.load(model_path + "trained_tau_1.npy")
             weights_e = np.load(model_path + "trained_weights_e.npy")
-            if model_type == 'inhibitory1' or model_type == 'inhibitory2':
+            if model_type == 'rectified inhibition':
                 weights_i = np.load(model_path + "trained_weights_i.npy")
                 intercept_i = np.load(model_path + "trained_intercept_i.npy")
             weights_intensity = None
@@ -136,18 +137,12 @@ for outward_model in [17, 0]:
                 if args['use_intensity']:
                     frame_intensity = np.load(intensity_files[ind])
                     assert(len(frame_intensity) == len(UV_flow_))
-                if model_type == 'excitatory':
-                    res_T = hpfn.get_response_excitatory_only(\
-                        args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, frame_intensity)
-                elif model_type == 'excitatory_WNR':
-                    res_T = hpfn.get_response_excitatory_only(\
-                        args, weights_e, intercept_e, a, b, UV_flow, weights_intensity, frame_intensity)
-                elif model_type == 'inhibitory1':
-                    res_T = hpfn.get_response_with_inhibition1(\
-                        args, weights_e, weights_i, intercept_e, intercept_i, a, b, UV_flow, weights_intensity, frame_intensity)
-                elif model_type == 'inhibitory2':
-                    res_rest, res_T, Ie_T, Ii_T, Ii_T2 = hpfn.get_response_with_inhibition2(\
-                        args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, frame_intensity)
+                if model_type == 'linear':
+                    res_rest, res_T = hpfn.get_response_linear(\
+                        args, weights_e, intercept_e, UV_flow, weights_intensity, intensity=0)
+                elif model_type == 'rectified inhibition':
+                    res_rest, res_T, Ie_T, Ii_T, Ii_T2 = hpfn.get_response_with_rectified_inhibition(\
+                        args, weights_e, weights_i, intercept_e, intercept_i, UV_flow, weights_intensity, intensity=0)
                 res_rest_all.append(res_rest)
                 res_T_all.append(res_T)
                 Ie_T_all.append(Ie_T)
@@ -195,15 +190,15 @@ args['alpha_leak'] = 0.0
 args['M'] = M
 args['temporal_filter'] = False
 args['tau_1'] = 1.
-model_types = ['excitatory', 'excitatory_WNR', 'inhibitory1', 'inhibitory2']
+model_types = ['linear', 'rectified inhibition']
 filter_types = ['outward', 'inward']
-model_type = model_types[3]
+model_type = model_types[1]
 filter_type = filter_types[in_or_out]
 
 # 16 (0): outward without (with) the right bulb in inhibitory filter, delta
 # 17 (0): outward without (with) the right bulb in inhibitory filter, exponential
-model_dict2 = {17:'', 0:'_sup1'} 
-for outward_model in [17, 0]:
+model_dict2 = {17:'', 0:'_sup1', 5:'_sup2'} 
+for outward_model in [17, 0, 5]:
     model_path = model_folders[in_or_out][outward_model]+'/' 
     data_type = 'hit'
     data_path = '/Volumes/Baohua/data_on_hd/loom/linear_law_exp/'+data_type+'/'
