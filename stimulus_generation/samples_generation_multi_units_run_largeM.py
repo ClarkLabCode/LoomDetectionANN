@@ -19,7 +19,7 @@ import importlib
 import dynamics_3d as dn3d
 import optical_signal as opsg
 import flow_field as flfd
-import samples_generation_multi_units_revision as smgnmur
+import samples_generation_multi_units as smgnmu
 import helper_functions as hpfn
 
 
@@ -44,7 +44,7 @@ for M in [192, 256]:
     steps_r = 50 # number of steps in rotation scenes
     D_min_r = 5 * R # minimum distance of the balls in the rotation scenes
     D_max_r = 15 * R # maximum distance of the balls in the rotation scenes
-    scal = 100. # rotational speed (deg/sec)
+    scal = 200. # rotational speed (deg/sec)
     hl = 0.2 * 1000 # half life (sec)
 
     # number of samples in one list
@@ -65,7 +65,7 @@ for M in [192, 256]:
     # set number
     set_number = 1000 + M
     # path to save the sample data
-    savepath = f'../../data/loom/multi_lplc2_D{np.int(D_min)}_L{np.int(L)}_exp_with_half_noise_rot/'
+    savepath = f'../../data/loom/multi_lplc2_D{np.int(D_min)}_L{np.int(L)}_exp_with_half_constant_rot_scal{int(scal)}/'
     # make the folder to save the samples
     hpfn.make_set_folder(set_number, savepath)
 
@@ -74,13 +74,13 @@ for M in [192, 256]:
 
     # generate the samples
     start_time = time.time()
-    smgnmur.generate_samples_par_exp(M, R, dt, dynamics_fun, around_z_angles, eta_1, sigma, theta_r, K, L, sample_dt, delay_dt, \
+    smgnmu.generate_samples_par_exp(M, R, dt, dynamics_fun, around_z_angles, eta_1, sigma, theta_r, K, L, sample_dt, delay_dt, \
                                 D_min, D_max, v_min, v_max, P, steps_r, D_min_r, D_max_r, scal, \
                                 N1, N2, N3, N4, M1, M2, M3, M4, NNs, set_number, savepath, num_cores)
 
     # generate the samples with background noise
     start_time = time.time()
-    smgnmur.generate_samples_par_exp_with_noisy_rot(M, R, dt, dynamics_fun, around_z_angles, eta_1, sigma, theta_r, K, L, sample_dt, delay_dt, D_min, D_max, v_min, v_max,\
+    smgnmu.generate_samples_par_exp_with_noisy_rot(M, R, dt, dynamics_fun, around_z_angles, eta_1, sigma, theta_r, K, L, sample_dt, delay_dt, D_min, D_max, v_min, v_max,\
                                                     P, steps_r, D_min_r, D_max_r, scal, hl, N1, N2, N3, M1, M2, M3, NNs,\
                                                     set_number, savepath, num_cores)
 
