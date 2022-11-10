@@ -2,8 +2,8 @@
 #SBATCH --job-name=M192_training
 #SBATCH --partition=day
 #SBATCH --ntasks=1 --nodes=1
-#SBATCH --cpus-per-task=10
-#SBATCH --mem-per-cpu=10G
+#SBATCH --cpus-per-task=20
+#SBATCH --mem-per-cpu=9G
 #SBATCH --time=1-
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=baohua.zhou@yale.edu

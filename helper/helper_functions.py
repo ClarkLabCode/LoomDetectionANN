@@ -30,7 +30,6 @@ import optical_signal as opsg
 import flow_field as flfd
 import samples_generation_multi_units as smgnmu
 import get_Klapoetke_stimuli_experiment as gKse
-import predefined_weights as pdwt
 import lplc2_models as lplc2
 
 
@@ -452,73 +451,6 @@ def plot_flow_weights(input_weights, mask_d, colormap, filename):
     plt.xticks([])
     plt.yticks([])
     
-    plt.show()
-    
-    fig.savefig(filename, bbox_inches='tight')
-
-    
-def plot_predefined_weights(theta_dt, K, L, filename):
-    
-    leftup_corners = flfd.get_leftup_corners(K, L, 0)
-    
-    # Excitatory neurons
-    weights_e = pdwt.get_all_weights_e(leftup_corners, theta_dt, K, L)
-    
-    weights_cf_right_e = pdwt.set_weights_on_frame(weights_e[:, 0], leftup_corners, K, L)
-    weights_cf_left_e = pdwt.set_weights_on_frame(weights_e[:, 1], leftup_corners, K, L)
-    weights_cf_up_e = pdwt.set_weights_on_frame(weights_e[:, 2], leftup_corners, K, L)
-    weights_cf_down_e = pdwt.set_weights_on_frame(weights_e[:, 3], leftup_corners, K, L)
-    
-    # Inhibitory neurons
-    weights_i = pdwt.get_all_weights_i(leftup_corners, theta_dt, K, L)
-    
-    weights_cf_right_i = pdwt.set_weights_on_frame(weights_i[:, 0], leftup_corners, K, L)
-    weights_cf_left_i = pdwt.set_weights_on_frame(weights_i[:, 1], leftup_corners, K, L)
-    weights_cf_up_i = pdwt.set_weights_on_frame(weights_i[:, 2], leftup_corners, K, L)
-    weights_cf_down_i = pdwt.set_weights_on_frame(weights_i[:, 3], leftup_corners, K, L)
-    
-    fig = plt.figure(figsize=(20, 10))
-    plt.subplot(2, 4, 1)
-    plt.imshow(weights_cf_right_e, cmap='gray_r')
-    plt.title('rightward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(2, 4, 2)
-    plt.imshow(weights_cf_left_e, cmap='gray_r')
-    plt.title('leftward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(2, 4, 3)
-    plt.imshow(weights_cf_up_e, cmap='gray_r')
-    plt.title('upward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(2, 4, 4)
-    plt.imshow(weights_cf_down_e, cmap='gray_r')
-    plt.title('downward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    
-    plt.subplot(2, 4, 5)
-    plt.imshow(weights_cf_right_i, cmap='gray_r')
-    plt.title('rightward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(2, 4, 6)
-    plt.imshow(weights_cf_left_i, cmap='gray_r')
-    plt.title('leftward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(2, 4, 7)
-    plt.imshow(weights_cf_up_i, cmap='gray_r')
-    plt.title('upward motion detector')
-    plt.xticks([])
-    plt.yticks([])
-    plt.subplot(2, 4, 8)
-    plt.imshow(weights_cf_down_i, cmap='gray_r')
-    plt.title('downward motion detector')
-    plt.xticks([])
-    plt.yticks([])
     plt.show()
     
     fig.savefig(filename, bbox_inches='tight')

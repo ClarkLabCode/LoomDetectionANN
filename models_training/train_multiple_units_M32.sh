@@ -2,7 +2,7 @@
 #SBATCH --job-name=M32_training
 #SBATCH --partition=day
 #SBATCH --ntasks=1 --nodes=1
-#SBATCH --cpus-per-task=30
+#SBATCH --cpus-per-task=34
 #SBATCH --mem-per-cpu=6G
 #SBATCH --time=1-
 #SBATCH --mail-type=ALL

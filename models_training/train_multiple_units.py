@@ -48,8 +48,8 @@ def train_multiple_units_f(M, seed_left, seed_right, n_cores):
     args['glm'] = False # whether reduce the model to a glm, need args['use_ln'] to be true and args['restrict_nonneg_weight'] false
     args['rectified_inhibition'] = False # whether rectify the inhibition or not
     args['M'] = M # total number of model units
-    args['save_folder'] = 'multi_lplc2_training_D5_exp_ln_relu_8fold_M32_random_z_nosymm_old_stimuli/' # folder that stores the trained results
-    args['data_path'] = '../../data/loom/multi_lplc2_D5_L4_exp_random_z_M32_8fold/' # path for the training and testing dataset
+    args['save_folder'] = 'multi_lplc2_training_D5_exp_ln_relu_with_half_constant_rot_scal200/' # folder that stores the trained results
+    args['data_path'] = '../../data/loom/multi_lplc2_D5_L4_exp_with_half_constant_rot_scal200/' # path for the training and testing dataset
     args['set_number'] = np.int(1000+args['M']) # indicate which dataset to be used for training
     args['N_epochs'] = 2000 # number of training epochs
     args['rotational_fraction'] = 1.0 # fraction of rotational data that is used in training and testing
@@ -57,8 +57,8 @@ def train_multiple_units_f(M, seed_left, seed_right, n_cores):
     args['L'] = 4 # resoluton of of each element in the args['K'] by args['K'] receptive field.
     args['lr'] = 1e-3 # learning rate
     args['restrict_nonpos_intercept'] = False # whether restrict the intercepts to be nonpositive 
-    args['rotation_symmetry'] = False # whether impose 90-deg rotation symmetry in the weights
-    args['flip_symmetry'] = False # whether impose left-right or up-down symmetry in the weights
+    args['rotation_symmetry'] = True # whether impose 90-deg rotation symmetry in the weights
+    args['flip_symmetry'] = True # whether impose left-right or up-down symmetry in the weights
     args['train_a'] = False # whether train the slope a inside the probabilistic model (the sigmoid function)
     args['report_num'] = 400 # how many steps to report the training process once
     args['max_response'] = False # whether use maximum response or the averaged one over the whole trajectory
