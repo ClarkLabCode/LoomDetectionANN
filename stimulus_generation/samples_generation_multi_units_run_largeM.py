@@ -23,7 +23,7 @@ import samples_generation_multi_units as smgnmu
 import helper_functions as hpfn
 
 
-for M in [192, 256]:
+for M in [256]:
 
     R = 1 # radius of the ball
     dt = 0.01 # time step (sec)
@@ -51,16 +51,16 @@ for M in [192, 256]:
     NNs = 10
     
     # number of training sample lists, and real sample size shold times NNs
-    N1 = 60 # hit
-    N2 = 30 # miss
-    N3 = 30 # retreat
-    N4 = 240 # rotation
+    N1 = 100 # hit
+    N2 = 50 # miss
+    N3 = 50 # retreat
+    N4 = 200 # rotation
     
     # number of testing sample lists, and real sample size shold times NNs
-    M1 = 20 # hit
-    M2 = 10 # miss
-    M3 = 10 # retreat
-    M4 = 80 # rotation
+    M1 = 30 # hit
+    M2 = 15 # miss
+    M3 = 15 # retreat
+    M4 = 60 # rotation
     
     # set number
     set_number = 1000 + M
@@ -79,10 +79,10 @@ for M in [192, 256]:
                                 N1, N2, N3, N4, M1, M2, M3, M4, NNs, set_number, savepath, num_cores)
 
     # generate the samples with background noise
-    start_time = time.time()
-    smgnmu.generate_samples_par_exp_with_noisy_rot(M, R, dt, dynamics_fun, around_z_angles, eta_1, sigma, theta_r, K, L, sample_dt, delay_dt, D_min, D_max, v_min, v_max,\
-                                                    P, steps_r, D_min_r, D_max_r, scal, hl, N1, N2, N3, M1, M2, M3, NNs,\
-                                                    set_number, savepath, num_cores)
+    # start_time = time.time()
+    # smgnmu.generate_samples_par_exp_with_noisy_rot(M, R, dt, dynamics_fun, around_z_angles, eta_1, sigma, theta_r, K, L, sample_dt, delay_dt, D_min, D_max, v_min, v_max,\
+    #                                                 P, steps_r, D_min_r, D_max_r, scal, hl, N1, N2, N3, M1, M2, M3, NNs,\
+    #                                                 set_number, savepath, num_cores)
 
     print(time.time() - start_time)
 
